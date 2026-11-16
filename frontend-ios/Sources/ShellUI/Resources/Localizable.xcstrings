@@ -65,6 +65,70 @@
         }
       }
     },
+    "1024 px": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 px"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 px"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 px"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 px"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 px"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 px"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 px"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 px"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 px"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1024 像素"
+          }
+        }
+      }
+    },
     "120 fps": {
       "localizations": {
         "de": {
@@ -125,6 +189,134 @@
           "stringUnit": {
             "state": "translated",
             "value": "120 fps"
+          }
+        }
+      }
+    },
+    "128 px": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 px"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 px"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 px"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 px"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 px"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 px"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 px"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 px"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 px"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "128 像素"
+          }
+        }
+      }
+    },
+    "16384 px": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 px"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 px"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 px"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 px"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 px"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 px"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 px"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 px"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 px"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "16384 像素"
           }
         }
       }
@@ -193,6 +385,134 @@
         }
       }
     },
+    "2048 px": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 px"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 px"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 px"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 px"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 px"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 px"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 px"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 px"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 px"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2048 像素"
+          }
+        }
+      }
+    },
+    "256 px": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 px"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 px"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 px"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 px"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 px"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 px"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 px"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 px"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 px"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "256 像素"
+          }
+        }
+      }
+    },
     "30 fps": {
       "localizations": {
         "de": {
@@ -257,6 +577,134 @@
         }
       }
     },
+    "4096 px": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 px"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 px"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 px"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 px"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 px"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 px"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 px"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 px"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 px"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4096 像素"
+          }
+        }
+      }
+    },
+    "512 px": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 px"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 px"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 px"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 px"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 px"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 px"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 px"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 px"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 px"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "512 像素"
+          }
+        }
+      }
+    },
     "60 fps": {
       "localizations": {
         "de": {
@@ -317,6 +765,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "60 fps"
+          }
+        }
+      }
+    },
+    "8192 px": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 px"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 px"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 px"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 px"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 px"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 px"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 px"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 px"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 px"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "8192 像素"
           }
         }
       }
@@ -10497,6 +11009,134 @@
         }
       }
     },
+    "Minimum texture height": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimale Texturhöhe"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimum texture height"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altura mínima de textura"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hauteur minimale des textures"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altezza minima texture"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "テクスチャの最小高さ"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "최소 텍스처 높이"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altura mínima da textura"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minsta texturhöjd"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "贴图最小高度"
+          }
+        }
+      }
+    },
+    "Minimum texture width": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimale Texturbreite"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimum texture width"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anchura mínima de textura"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Largeur minimale des textures"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Larghezza minima texture"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "テクスチャの最小幅"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "최소 텍스처 너비"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Largura mínima da textura"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minsta texturbredd"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "贴图最小宽度"
+          }
+        }
+      }
+    },
     "Minus": {
       "localizations": {
         "de": {
@@ -12609,6 +13249,134 @@
         }
       }
     },
+    "Original texture height in pixels.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Höhe der ursprünglichen Textur in Pixeln."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original texture height in pixels."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altura original de la textura en píxeles."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hauteur de la texture d’origine en pixels."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altezza originale della texture in pixel."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "元のテクスチャの高さ（ピクセル）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "원본 텍스처의 높이(픽셀)입니다."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altura original da textura em pixels."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Den ursprungliga texturens höjd i pixlar."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原始贴图的高度，单位为像素。"
+          }
+        }
+      }
+    },
+    "Original texture width in pixels.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Breite der ursprünglichen Textur in Pixeln."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original texture width in pixels."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anchura original de la textura en píxeles."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Largeur de la texture d’origine en pixels."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Larghezza originale della texture in pixel."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "元のテクスチャの幅（ピクセル）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "원본 텍스처의 너비(픽셀)입니다."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Largura original da textura em pixels."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Den ursprungliga texturens bredd i pixlar."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原始贴图的宽度，单位为像素。"
+          }
+        }
+      }
+    },
     "Over the picture": {
       "localizations": {
         "de": {
@@ -14337,6 +15105,70 @@
         }
       }
     },
+    "Real speed at the game's own frame rate": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normales Spieltempo bei spieleigener Bildrate"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Real speed at the game's own frame rate"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Velocidad real con la tasa del juego"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vitesse normale à la fréquence du jeu"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Velocità normale con i fotogrammi del gioco"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ゲーム標準のフレームレートで通常速度を維持"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "게임 기본 프레임 속도에서 실제 속도 유지"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Velocidade real na taxa do jogo"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal spelhastighet med spelets egen bildfrekvens"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原生帧率下保持正常游戏速度"
+          }
+        }
+      }
+    },
     "Recently played": {
       "localizations": {
         "de": {
@@ -14397,6 +15229,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "最近游玩"
+          }
+        }
+      }
+    },
+    "Reduce BC texture memory": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BC-Texturspeicher reduzieren"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reduce BC texture memory"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reducir memoria de texturas BC"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réduire la mémoire des textures BC"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riduci memoria delle texture BC"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BC テクスチャのメモリを削減"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BC 텍스처 메모리 줄이기"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reduzir memória de texturas BC"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minska minnet för BC-texturer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "减少 BC 贴图内存"
           }
         }
       }
@@ -16637,6 +17533,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "大小"
+          }
+        }
+      }
+    },
+    "Skips the finest mip level when both size thresholds are met. Saves memory but can blur nearby surfaces. Restart the game to apply.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Überspringt die feinste Mip-Stufe, wenn beide Größenschwellen erreicht sind. Spart Speicher, kann aber nahe Oberflächen unscharf machen. Zum Anwenden das Spiel neu starten."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skips the finest mip level when both size thresholds are met. Saves memory but can blur nearby surfaces. Restart the game to apply."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Omite el nivel mip más fino cuando se cumplen ambos umbrales. Ahorra memoria, pero puede desenfocar superficies cercanas. Reinicia el juego para aplicar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ignore le niveau mip le plus fin lorsque les deux seuils sont atteints. Économise de la mémoire, mais peut rendre les surfaces proches floues. Redémarrez le jeu pour appliquer."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta il livello mip più dettagliato quando entrambe le soglie sono raggiunte. Risparmia memoria, ma può sfocare le superfici vicine. Riavvia il gioco per applicare."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "幅と高さが両方ともしきい値以上の場合、最も精細な mip レベルを省略します。メモリを節約しますが、近くの表面がぼやける場合があります。適用にはゲームの再起動が必要です。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "너비와 높이가 모두 기준 이상이면 가장 세밀한 밉 레벨을 생략합니다. 메모리를 절약하지만 가까운 표면이 흐려질 수 있습니다. 적용하려면 게임을 다시 시작하세요."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ignora o nível mip mais detalhado quando ambos os limites são atingidos. Economiza memória, mas pode desfocar superfícies próximas. Reinicie o jogo para aplicar."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hoppar över den finaste mip-nivån när båda storleksgränserna nås. Sparar minne men kan göra närliggande ytor suddiga. Starta om spelet för att tillämpa."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宽高均达到阈值时跳过最精细的 mip 层，节省内存，但近处表面可能变模糊。重启游戏后生效。"
           }
         }
       }
@@ -19645,6 +20605,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "窗口"
+          }
+        }
+      }
+    },
+    "With Frame rate at the game's own, the game's clock follows the measured frame time below 60 fps instead of running slow.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bei spieleigener Bildrate folgt die Spielzeit unter 60 fps der gemessenen Framezeit, damit das Spiel nicht langsamer läuft."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "With Frame rate at the game's own, the game's clock follows the measured frame time below 60 fps instead of running slow."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajusta el tiempo del juego a los fotogramas presentados cuando la tasa es la del juego."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avec la fréquence du jeu, son horloge suit la durée réelle des images sous 60 fps pour éviter le ralenti."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Con la frequenza del gioco, il tempo di gioco segue la durata effettiva dei fotogrammi sotto i 60 fps per evitare rallentamenti."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "フレームレートがゲーム標準の場合、60 fps 未満でも実際のフレーム時間に合わせてゲーム時間を進め、スローモーションを防ぎます。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "게임 기본 프레임 속도 사용 시 표시된 프레임에 맞춰 게임 시간을 조정합니다."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajusta o tempo do jogo aos quadros apresentados ao usar a taxa de quadros do jogo."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Med spelets egen bildfrekvens följer spelklockan den uppmätta bildtiden under 60 fps så att spelet inte går långsamt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "帧率选择“游戏自带”时，低于 60 fps 也会按实际帧耗时推进游戏时间，避免慢动作。"
           }
         }
       }

@@ -1,7 +1,15 @@
+1024 px
 120 fps
+128 px
+16384 px
 16:9 (Switch)
+2048 px
+256 px
 30 fps
+4096 px
+512 px
 60 fps
+8192 px
 American English
 Brazilian Portuguese
 British English
@@ -46,7 +54,11 @@ Match screen
 Medium
 Metal 4 pipelines
 MetalFX
+Minimum texture height
+Minimum texture width
 Mix with other audio
+Original texture height in pixels.
+Original texture width in pixels.
 Performance
 Performance HUD
 Picture
@@ -56,6 +68,8 @@ Plays Joy-Con 2 and Pro Controller 2 over Bluetooth: hold Sync on one during the
 Plays game audio alongside other apps instead of stopping them.
 Portuguese
 Press a button to join
+Real speed at the game's own frame rate
+Reduce BC texture memory
 Render scale
 Renders about a quarter more pixels: a little slower and warmer.
 Rumble cutoff
@@ -65,6 +79,7 @@ Saves memory on devices without hardware BC textures, with slightly less precise
 Shader prefetch
 Simplified Chinese
 Size
+Skips the finest mip level when both size thresholds are met. Saves memory but can blur nearby surfaces. Restart the game to apply.
 Small
 Spanish
 Standard
@@ -78,4 +93,5 @@ Upscaling
 Uses more GPU time and can increase heat.
 Where the left stick of the on-screen controls sits.
 Window
+With Frame rate at the game's own, the game's clock follows the measured frame time below 60 fps instead of running slow.
 iPhone Duo screen (1.43:1)
