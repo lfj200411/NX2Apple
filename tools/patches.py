@@ -16,7 +16,7 @@ series back after a bump. Its only command (Python 3.9+, stdlib and git):
 Syncing, exporting, checking and bumping are tools/engine.py's. Scratch worktrees go under $PATCHES_TMP (or --tmp), else the
 system temporary folder.
 """
-import argparse, fnmatch, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, fnmatch, hashlib, os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -38,6 +38,21 @@ KINDS = ('forwarded', 'pending', 'fork-only', 'backport')
 # Used only when that file has no such paragraph.
 CHAIN_FALLBACK = ('dm/gfx/nvn/dmsh_chain.h', 'dm/gfx/tools/dmsh_*', 'dm/gfx/tools/Program.cs', 'dm/gfx/tools/ios_metal.py',
                   'dm/gfx/tools/dmsh_chain.lock', 'dm/gfx/nvn/dmsh_abi.h')
+
+
+# This private customization branch carries explicitly requested shader backports.
+# The complete mail patch is pinned, so a changed patch is rejected until reviewed.
+CHAIN_BACKPORTS = {
+    '0e7ade76ff45020d1e76fe296af38691a0af117035ea29889f817764197e0099': 'local Ocarina shader port on 94a0944 (#1752 and iPad M5)',
+}
+
+
+def chain_backport_bytes(content):
+    return CHAIN_BACKPORTS.get(hashlib.sha256(content).hexdigest())
+
+
+def chain_backport(patch):
+    return chain_backport_bytes(patch.path.read_bytes())
 
 
 class Fail(Exception):

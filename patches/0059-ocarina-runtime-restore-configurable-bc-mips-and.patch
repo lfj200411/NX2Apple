@@ -1,0 +1,1651 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Mon, 16 Nov 2026 17:20:53 +0800
+Subject: [PATCH] ocarina/runtime: restore configurable BC mips and iPad tuning
+
+Adapt the saved local customization to the new texture owner, partial uploads,
+profile loader and packaging. Keep upstream mesh and visibility implementations.
+Preserve native NDSR, real-speed stepping, resource overlays and conditional
+substitution of damaged RomFS streams. Retain the new LRU cache policy.
+
+Front-ends: BC memory toggle and independent dimensions, real-speed option.
+Upstream-Status: fork-only
+Reason: user-requested local Ocarina customization rebased onto main
+Issue: local user request 2026-11-16
+---
+ dm/games/0400486024DEC000/README.md         |  17 +++
+ dm/games/0400486024DEC000/game.tsv          |  29 ++++
+ dm/games/0400486024DEC000/patches.py        |  69 +++++++---
+ dm/games/README.md                          |   4 +
+ dm/games/game.py                            |  14 +-
+ dm/games/settings.tsv                       |   6 +-
+ dm/gfx/nvn/hle_nvn.c                        |  26 ++++
+ dm/gfx/nvn/nvn_fstep.h                      |  22 ++++
+ dm/gfx/nvn/nvn_mtl.m                        |  86 +++++++++---
+ dm/gfx/nvn/nvn_owner.m                      |   7 +-
+ dm/gfx/tests/Makefile                       |   9 ++
+ dm/gfx/tests/t_bc_mip_skip.m                | 138 ++++++++++++++++++++
+ dm/gfx/tests/t_fstep.c                      |  15 +++
+ dm/host/hle.h                               |   2 +-
+ dm/host/hle_fs.c                            |  83 +++++++++++-
+ dm/host/hle_profile.c                       |  23 +++-
+ dm/host/hle_profile.h                       |   4 +-
+ dm/host/tests/t_fs.c                        |  22 ++++
+ dm/host/tests/t_profile_runtime.c           |  17 ++-
+ dm/ios/Sources/main.m                       |   4 +
+ dm/ios/Sources/player_env.h                 |   1 +
+ dm/ios/tools/build_ipa.sh                   |   3 +-
+ dm/ios/tools/stage_resources.sh             |   2 +-
+ dm/mac/launcher.c                           |   3 +-
+ dm/mac/pack_app.py                          |   4 +-
+ dm/tools/nso_asm.py                         |   2 +
+ dm/tools/patch_nso.py                       |   4 +-
+ dm/tools/tests/test_game_profile_runtime.py |   5 +-
+ dm/tools/tests/test_oot_frame_step.py       |  91 +++++++++++++
+ dm/tools/tests/test_settings.py             |  20 +++
+ docs/reference/frame-rate.md                |   8 ++
+ docs/reference/rendering.md                 |   8 ++
+ docs/settings.md                            |   9 +-
+ scripts/build_ipa_from_nsp.py               |   5 +-
+ scripts/oot_res_overlay.py                  |  48 +++++++
+ 35 files changed, 743 insertions(+), 67 deletions(-)
+ create mode 100644 dm/gfx/tests/t_bc_mip_skip.m
+ create mode 100644 dm/tools/tests/test_oot_frame_step.py
+ create mode 100755 scripts/oot_res_overlay.py
+
+diff --git a/dm/games/0400486024DEC000/README.md b/dm/games/0400486024DEC000/README.md
+index 44b18eb..974f7b0 100644
+--- a/dm/games/0400486024DEC000/README.md
++++ b/dm/games/0400486024DEC000/README.md
+@@ -21,6 +21,8 @@ Render conditions, which the host evaluates for every game ([Conditional renderi
+ 
+ One [NUP container](../../../docs/development.md#the-packing-script-in-detail) of 25.6 GB: `scripts/pack_nup.py` unpacks it to `extract/v131072/`. The RomFS keeps most files as zstd with dictionaries from `Pack/ZsDic.pack.zs`. The movies are AV1.
+ 
++The NUP at hand has three damaged files: `Tex/CmnTex_Map_Soil_FairyFountain_Floor_D_Nrm.bntx.zs`, `Tex/Rock_WaterTemple_Gate_M_01_Nrm.bntx.zs` and `Tex/RBake_Scene_GanonStage_G_2_1_d0_t0.bntx.zs` begin with 12 KB of zeros (the container's SHA-256 matches them: damaged when dumped; all other 102,182 `.zs` files begin with a zstd frame). The first kept the Kokiri Forest fairy fountain model from ever loading: the `OptimizeChangeBanc` thread asked for it ~22 times a second all session (one core) and a `ParallelDecompThread` decompressed its 2.4 MB each time (~0.75 core). The profile key `romfs_substitute` serves them as the game's 1x1 flat normal map (the Ganon stage bake as its neighbour cell's): Mac CPU 412% → 180%, frame p95 21.9 → 18.8 ms (agent notes `ZEL_build/agents/a10_guestcpu.md`).
++
+ ## Shaders
+ 
+ - About 42,850 in [`shader_map.tsv`](shader_map.tsv), including 500 mesh and 20 task shaders in the BNSH programs ([Task and mesh shaders in BNSH](../../../docs/reference/shaders.md#task-and-mesh-shaders-in-bnsh-and-indirect-mesh-draws)), and the movie library's in an NDVE pack ([`nn::ndve`](../../../docs/reference/shaders.md#nnndves-movie-enhancement-file)).
+@@ -36,6 +38,7 @@ Measured on an M6 Mac with 16 GB, headless, on one walk with camera turns (`walk
+ - Resolved: the title movie and the cutscene movies stuttered in small regular jerks at that steady 60 fps on a Mac that decodes AV1 with dav1d (M1, M2). The frames were on time and the movie's pictures were not: the player's `advance` (`main+0x3b61ea0`) found no new picture in 546 and 569 of about 2,900 frames of the title on an M2 Pro, and showed the last one again. Two causes, both general: [packets decoded inside the submission](../../../docs/reference/movies.md#nncodec-packets-decoded-inside-the-submission), on the player's one reader thread, which also gives the shown pictures back, and [dav1d one frame at a time](../../../docs/reference/movies.md#dav1d-decoded-one-frame-at-a-time) (15.4 ms a packet in the movie's heaviest five seconds, 122 ms the longest). After: 0 or 1 in 2,567 to 3,036 frames a run (eight runs of 54 s, headless, `DM_PROBE=main:3b61ed8,main:3b61f80` counting the failed and the good calls), and `DecodeAsync` returns in 0.1 ms at the median and 1.1 ms at the 99th percentile, from 1.9 and 120 ms. Open: not run on an M1 or M2 with four performance cores, nor on an iPad; a Mac with a hardware AV1 decoder (M3 on) decodes with VideoToolbox, where only the first cause applied, not measured.
+ - Game speed: the game steps its time by a frame ratio, its base rate (60, or 30) / its int frame rate, whatever the frame took (`main+0x6e6cc4` on v131072), so frames longer than a vsync played in slow motion (seen by the user on a slower Mac; [issue 1375](https://github.com/seedds/nxnative/issues/1375)'s M1 Max ran the title at about 28 fps). With `fps_target 60` the ratio is the host's frame step × base / 60 ([A fixed frame step plays in slow motion on a slow Mac](../../../docs/reference/frame-rate.md#a-fixed-frame-step-plays-in-slow-motion-on-a-slow-mac)), a stub placed by its function's fingerprint ([`patches.py`](patches.py)). Mac runs on the M6 (2026-11-08, a test host on the libraries of chain `3ee493b2c3a4`): the user's play sessions held 60 fps with 2- and 3-vsync holds while areas loaded, game time 1.000 of real time by the host's count. That count is the stub's own; no run on a Mac slow enough to show the slow motion before and after.
+ - Sizes since the host answers graphics scale tier 0 docked ([The graphics scale does not follow the operation mode](../../../docs/reference/services.md#the-graphics-scale-does-not-follow-the-operation-mode)): the game's output is 2560x1440 and its top internal resolution 1920x1080. Every size and time in this note was taken with tier 1, at 0.8 of that (2048x1152 and 1536x864, and the dynamic resolution's levels with them), and has not been taken again. With tier 0 on `main` (two contributors' runs, only that answer changed): M4 Pro (20-core GPU), docked, fullscreen, GPU p50 15.0 ms against 12.9-14.0 ms, 59.0 fps against 55.8-59.8; M5 Pro (20-core GPU, 48 GB), Dynamic resolution off, 24 minutes of play, GPU p50 12.7 ms, 58.4 fps. Open: a slower Mac, and the routes of [`bench.tsv`](bench.tsv), with tier 0.
++- Without a target (**Frame rate** at the game's own, `DM_FPS_TARGET=0`, the iPad's smoothest pacing) the stub takes the frame rate the host measured instead (profile `fps_real on`, `DM_FPS_REAL=0` turns it off): `hle_nvn.c` `freal_tick` writes the whole fps the mean of its last 8 present intervals gives (1-4 vsyncs: 15..60) at state +0x2c each present, the frame-ratio stub divides by it in place of the game's 60 and adds each step at +0x38, and the host logs `real speed: game time … of real time` every 1,800 presents. Nothing is held, so the pacing is unchanged. [Real speed without a frame rate target](../../../docs/reference/frame-rate.md#real-speed-without-a-frame-rate-target); measured on the zelda-speed line (its simulation stub at the framework FPS load, the same measurement), on the Mac slowed with `DM_TEST_PRESENT_LAG=2,20`: the probe on the time manager summed 0.962 of real time over 96 s of walking at 18-46 updates a second (0.999 in the steady 45 fps stretch), against 0.749 with `DM_FPS_REAL=0` at 45 updates a second and 0.511 had the game stepped 1/60 s through the slow stretch. Needs a main rewritten from this `patches.py` (the stub's target-0 path): the rewrite key changes, the shader chain does not.
+ - Current: walking the village at the game's top internal resolution, 1536x864: a locked 60 fps, mean 16.67 ms over each settled window. Per 2,700 frames: 0-8 frames over 25 ms and 0-2 over 33 ms. Frame p95 17.8-18.9 ms with no window, as the game's own loop moves around its fence wait; in a window p95 17.8 ms, 3 over 25 ms and 5-16 over 18 ms per 600. GPU span p50 16.5 ms, summed GPU 15.8 ms, CPU 6 ms, about 101 passes a frame. The heavy stretch where the village opens (about 1,560 draws) holds 16.65-16.8 ms by lowering its resolution, then returns to full. The main pass used to sit at 763x429 at the same GPU time: [marked shaders tested depth late](../../../docs/reference/frame-rate.md#a-hosts-own-store-in-a-fragment-shader-moves-its-depth-test).
+ - Before [pool shaders stopped counting as depth readers](../../../docs/reference/rendering.md#pool-shaders-taken-as-depth-readers): passes 118, 104, 219, 224 in a four-frame cycle, frame times 15, 15, 18, 18.5 ms, mean 16.9 ms. Half the frames rendered the reflection probe's faces with one draw a pass.
+ - The host's GPU figure adds up command buffers, which overlap, so it reads above the real span: 17.5 ms was never a frame's real time. The real span is `@gpu_end_ms − @gpu_beg_ms` in `DM_NVN_TSV`, or the `first start to last end` of `DM_NVN_GPUPROF`.
+@@ -58,6 +61,14 @@ Measured on an M6 Mac with 16 GB, headless, on one walk with camera turns (`walk
+ - The opening movie runs at the movie's own 24 fps pace during the story section and cannot be skipped: about 8 minutes on a new file.
+ - Resolved: at a 30 fps cap (`DM_FPS_TARGET=30`) the title and opening movies played at half speed: the player takes one picture per game frame, and the movies are 60 pictures a second (their times whole milliseconds, also through the opening's story section). The frame step now follows the movie's picture rate: [The frame step follows a movie's picture rate](../../../docs/reference/frame-rate.md#the-frame-step-follows-a-movies-picture-rate) ([PR #2622](https://github.com/seedds/nxnative/pull/2622)). On an M6 at the 30 cap: 10 s of movie in 20.0-24.2 s before, 10.0-10.4 s after, the step 60 while a movie plays and 30 again when its decoder is finalized. Open: where the frames cannot hold 60 (an M1 with the movie network on), the step falls to 30 for late frames and the movies still play slowly; only a change in the player itself (`advance`, `main+0x3b61ea0`, stepping pictures by the frame step) would cover that.
+ 
++## Local iPad M5 optimization port
++
++The local port follows [aksmith-git/nxnative pub/oot-ipad-m5](https://github.com/aksmith-git/nxnative/tree/4b2d73c84d9e2cf99e1b9979de774201625840ba), keeping its NDSR network. `upscaler_replace off` removes the replacement control and prevents saved overrides from replacing it. The earlier custom standard scaler and VR MetalFX replacement are removed. Frame rate now offers the game's own pacing (`0`) as well as 30 and 60, so `fps_real` can be used without an environment file. Defaults remain 60, with late-frame holding off and present snapshots on, as in the source branch.
++
++The shader port includes NDSR gather / matrix reuse, float atomic reductions and cached pool-mark reads. Grouped atomic reductions were corrected during integration: all active lanes execute each collective with nonmatching values masked to zero, rather than reducing inside a divergent group. Synthetic GPU regression tests compare uniform, grouped, divergent and threadgroup sums with the original kernels.
++
++The modern upstream already includes the NDSR gather footprint, HMMA matrix reuse, cached pool-mark reads and every old iPad pipeline seed. Its mesh ABI, cumulative visibility queries and LRU texture owner supersede the old experimental grass pre-pass, segment feedback and fixed ghost ring. Those obsolete paths are not transplanted. `DM_NVN_GHOST` now adjusts the idle LRU cache target while retaining recently used entries. Fixed-resolution overlays remain available through `scripts/oot_res_overlay.py`. Whole-game image quality and iPhone/iPad frame time remain unvalidated on this rebase.
++
+ ## Dynamic resolution
+ 
+ - The controller (v131072; found by fingerprint, so the addresses are only for reading): the parameters are `game__gfx__DynamicResolutionParam` (`LoadThreshold`, `ReduceCounterMax`, `IncreaseCounterMax`, and a list of levels, each a `ResolutionReduceScale` and a `Priority`). Once a frame the update (`main+0x805aa0`) reads the frame's GPU time, subtracts what its cost model predicts at the current size and keeps the trend of that residual. The level function (`main+0x8065e0`) adds the residual to the model's cost at each level and returns the best level under the threshold: 0, the full 1536x864, when the current size fits. The update moves down after `ReduceCounterMax` frames that ask for it and back up after `IncreaseCounterMax`. Scripted `GPULoad` hints from event data (`main+0x31c3de0`) and `OneshotSetDynamicResolutionLoadThreshold` adjust it in cutscenes.
+@@ -280,3 +291,9 @@ Its 37 kernels that correct samples, NDSR's network among them, gave about 0.25
+ - [dav1d decoded one frame at a time](../../../docs/reference/movies.md#dav1d-decoded-one-frame-at-a-time): resolved, the title movie's heavy packets on an M2 Pro; and the drain that must go to its end.
+ - [`devicectl` copies a large RomFS image through the Mac's memory](../../../docs/reference/packing.md#devicectl-copies-a-large-romfs-image-through-the-macs-memory): the 26.2 GB image's pushes to an iPad filled a 16 GB Mac's swap and failed; now sent over AFC.
+ - [`devicectl`'s `--remove-existing-content` empties the app's whole container](../../../docs/reference/packing.md#devicectls---remove-existing-content-empties-the-apps-whole-container): the first complete copy of the image, deleted by the DLC step after it.
++
++## Optional BC mip memory reduction
++
++The game settings expose **Reduce BC texture memory**, **Minimum texture width** and **Minimum texture height**. The default is on for iOS and off for Mac, with independent 512-pixel thresholds. Only read-only BC textures with multiple mip levels are eligible. Both original dimensions must meet their thresholds. Sampling then starts at mip1, reducing host texture memory at the cost of fine detail. The guest layout stays unchanged. Copies, image writes, render targets and explicit GPU readbacks restore every level, and later uploads keep that full allocation. Restart after changing the settings. `DM_NVN_BC_MIP_SKIP=0` disables it, `=1` enables it, and `DM_NVN_BC_MIP_MIN_WIDTH` / `DM_NVN_BC_MIP_MIN_HEIGHT` set the limits. Older numeric switch values remain accepted as a common threshold.
++
++Validation: `make -C dm/gfx/tests GAME=0400486024DEC000 check_t_bc_mip_skip` exercises uploads, sampled views, alias promotion and copies with native BC and CPU-decoded textures under Metal validation. Device gameplay remains to be checked.
+diff --git a/dm/games/0400486024DEC000/game.tsv b/dm/games/0400486024DEC000/game.tsv
+index 45ccc5e..9f711fa 100644
+--- a/dm/games/0400486024DEC000/game.tsv
++++ b/dm/games/0400486024DEC000/game.tsv
+@@ -22,6 +22,13 @@ modules	main subsdk0 sdk
+ romfs_marker	Pack/ZsDic.pack.zs
+ zip_store	.zs:.bwav:.webm:.metallib
+ 
++# The NUP's copies of three RomFS files begin with 12 KB of zeros (their SHA-256 in the container matches: damaged when dumped), so they cannot be decompressed. Served as stored, the fairy
++# fountain model that uses the first never loaded and the OptimizeChangeBanc thread (main+0xf7a0) asked for it again ~22 times a second all session: one core, plus ~0.75 core of
++# ParallelDecompThread decompressing the 2.4 MB model each time (Mac CPU 365%, iPad 400-460%). "Not found" fails the model the same way. Served as the game's own 1x1 flat normal map, the
++# model loads once and both threads go idle (Mac CPU 412% -> 180%, frame p95 21.9 -> 18.8 ms). The Ganon stage bake is served as its neighbour cell's (not checked in game). A good dump needs none of
++# this: the host substitutes only a .zs file that is not a zstd stream (hle_fs.c img_serve)
++romfs_substitute	Tex/CmnTex_Map_Soil_FairyFountain_Floor_D_Nrm.bntx.zs=Tex/Dummy_Flat_Normal_CmnTex_Chara_DetailMap_Nrm.bntx.zs Tex/Rock_WaterTemple_Gate_M_01_Nrm.bntx.zs=Tex/Dummy_Flat_Normal_CmnTex_Chara_DetailMap_Nrm.bntx.zs Tex/RBake_Scene_GanonStage_G_2_1_d0_t0.bntx.zs=Tex/RBake_Scene_GanonStage_G_2_2_d0_t0.bntx.zs
++
+ # ---- Memory ----
+ # The Switch 2 leaves games 9 GB of its 12 GB (Donkey Kong Bananza's figure). The NPDM declares 48 MB of system resource, so virtual address memory is on.
+ # nninitStartup asks SetHeapSize 0x18ce00000 (6.2 GB) with the 9 GB pool, as Mario Kart World. 256 MB in front + 4 GB alias region + 256 MB stack region + 8 GB heap region: a starting split, to be measured
+@@ -35,14 +42,36 @@ sys_resource	0x3000000
+ # ---- Shader split (shader_split.py) ----
+ shader_groups	/Shader/=shader /Effect/=effect /Lib/=lib /UI/=layout
+ shader_note	Ocarina of Time shaders
++# Float atomic adds whose old value is not used (the exposure and cubemap-to-SH reductions: 256 threads, or 96 groups of them, adding into 1-4 words through the translator's
++# compare-and-swap loop) become a SIMD-group sum and one native float add (dm/gfx/tools/dmsh_redsum.py). 6 compute shaders, 23 loops; on an M5 1bba09ec4bc8ff67 361 -> 9 us,
++# 6e28359aa3558f61 289 -> 70 us, 0.69 ms of the frame. DMSH_REDSUM=0 builds without it
++shader_redsum	on
+ 
+ # ---- Frame rate ----
+ # The game steps its time by a frame ratio, its base rate / its frame rate, whatever the frame took: frames longer than a vsync played in slow motion. The ratio takes the host's
+ # frame step instead (MATCH_FRAME_STEP in patches.py, found by its function on any build that keeps it): 1 vsync at 60 fps, 2 when 60 does not hold, so game time = real time
+ fps_target	60
++# Real speed at the game's own pacing (Frame rate = Game's own, DM_FPS_TARGET=0, the iPad's best): there the game's frame rate stays 60 whatever the frames take, so below 60 fps
++# it ran in slow motion. The host measures the present interval (mean of 8, 1-4 vsyncs) and the frame-ratio stub (patches.py frame_step) divides by the matching whole fps in place
++# of the game's 60; the pacing is untouched (nothing is held). DM_FPS_REAL=0 turns it off
++fps_real	on
++# Late frames are not held longer (the launcher's Hold frames when late, DM_FPS_HOLD): with holding on, three late frames stepped to 30, the GPU clock then fell (a probe back
++# to 60 measured the same work at 3.35x its GPU time on an M4 Pro) and the game stayed at 30 for minutes at a GPU time near 16.7 ms; off, a late frame is shown late and the
++# game steps by the vsyncs that passed (M4 Pro, 1280x720: frame p50 17.3 ms, never 30). Under the iOS thermal cap the host still holds 30
++fps_hold	off
+ 
+ # ---- Graphics ----
+ draw_barriers	game
++# Keep the native NDSR network, including when a previous launcher saved an upscaler override.
++upscaler_replace	off
++# iPad Pro M5 (zelda line, pull13, 1440x810 held): the same frames took 22 ms of GPU, then 61-85 ms with the same size and passes, thermal state nominal; the rise came over 4 s
++# after CPU-bound frames left the GPU idle (the game also waits on the fence of the frame it just submitted). That is iOS's GPU clock governor reading idle as headroom,
++# as with Breath of the Wild on the iPhone, whose fix is present snapshots: the swapchain texture is free at once, so the next frame starts sooner. Mac M4 Pro, 1440x810: GPU 20.0-20.2 ms
++# with or without them, frame p50 no worse. The launcher's Frame buffering and DM_PRESENT_SNAP=0 override it
++present_snap	on
+ # As Tears of the Kingdom: the terrain's height, blend and hole maps are written by the CPU into textures after they are created. Without these keys they stay zero: holes in the ground and the wrong materials
+ tex_flush_upload	on
+ tex_dirty_upload	on
++
++# Optional lossy BC memory reduction defaults on in iOS, off on Mac.
++tex_bc_mip_skip	on
+diff --git a/dm/games/0400486024DEC000/patches.py b/dm/games/0400486024DEC000/patches.py
+index cade577..e9860d2 100644
+--- a/dm/games/0400486024DEC000/patches.py
++++ b/dm/games/0400486024DEC000/patches.py
+@@ -1,36 +1,63 @@
+ # The Legend of Zelda: Ocarina of Time (0400486024DEC000): the rewriter's patches of this game's own code. dm/tools/patch_nso.py loads every profile's patches.py;
+ # MATCH_FRAME_STEP as described there ("Registered patches"). Patches of Nintendo SDK module builds are in dm/tools/sdk_patches.py
+-from nso_asm import ADRP, B
++from nso_asm import ADRP, B, CBZW
+ 
+ # The game's frame ratio. Once a frame the function at main+0x6e6be0 (v131072) divides its base rate (60.0, or 30.0 while bit 0 of [x21+0x24f] is set) by the int frame rate at
+ # [x21+0x2c8] (fdiv s8,s1,s0 at +0xe4) and hands the result to the time object (main+0x3b4e300: ratio at +0x10, 1 / ratio at +0x14, round(60 / ratio) at +0x1c), which the game
+ # steps by; the frame's own time never enters it, so a frame that takes two vsyncs at rate 60 plays at half speed. The stub gives the ratio the host's step instead: step × base / 60
+-# (the division's value when the host keeps frames 60 / rate vsyncs), and counts the vsyncs stepped. Until the host has decided a step, and at fps_target 0, the division runs.
++# (the division's value when the host keeps frames 60 / rate vsyncs), and counts the vsyncs stepped. Until the host has decided a step, the division runs.
++# At fps_target 0 (the game's own pacing, the iPad's best: no frame is held) the game's frame rate stays 60 whatever the frames take, so below 60 fps it ran in slow motion. There the
++# divisor is the whole frame rate the host measured from its presents (state +0x2c, 15..60, hle_nvn.c freal_tick, profile fps_real / DM_FPS_REAL), so the game runs at real speed at any
++# frame rate; each such frame adds 60000 / fps (units of 1/60000 s) at +0x38 for the host's "real speed" line. 0 there (not measured yet, or fps_real off) runs the division as it is.
+ # s0 and x16 / x17 are free there (s0 is written again on every path before it is read; the function uses neither x16 nor x17); s1 keeps the base rate.
+ # Lichii (a GPL emulator; only the fact was taken) found the division (its notes: main+0x6E6CC4, 60 / [x21+0x2C8])
+ def frame_step(ctx):
+     here, emit, fs_site, fs_put, FS_STATE_OFF, base = ctx.here, ctx.emit, ctx.site, ctx.put, ctx.state, ctx.base
+     site = base + 0xe4
+     fs_site(site, '2818201e')   # fdiv s8,s1,s0
+-    start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
+-    for w in (0xb9400211,   # ldr w17,[x16]          target fps (0 = off)
+-              0x340001b1,   # cbz w17,orig (+13)
+-              0xb9402211,   # ldr w17,[x16,#0x20]    step in vsyncs
+-              0x34000171,   # cbz w17,orig (+11)     not decided yet
+-              0x1e230220,   # ucvtf s0,w17
+-              0xf9401a10,   # ldr x16,[x16,#0x30]
+-              0x8b110210):  # add x16,x16,x17
+-        emit(w)
+-    emit(ADRP(17, here(), FS_STATE_OFF))
+-    for w in (0xf9001a30,   # str x16,[x17,#0x30]    vsyncs stepped
+-              0x1e210808,   # fmul s8,s0,s1          step × base rate
+-              0x52a84e10,   # mov w16,#0x42700000    60.0
+-              0x1e270200,   # fmov s0,w16
+-              0x1e201908):  # fdiv s8,s8,s0          / 60
++    words = [
++        'adrp16',
++        0xb9400211,          # ldr w17,[x16]          target fps (0 = the game's own pacing)
++        ('cbz', 17, 'real'),
++        0xb9402211,          # ldr w17,[x16,#0x20]    step in vsyncs
++        ('cbz', 17, 'orig'), # not decided yet
++        0x1e230220,          # ucvtf s0,w17
++        0xf9401a10,          # ldr x16,[x16,#0x30]
++        0x8b110210,          # add x16,x16,x17
++        'adrp17',
++        0xf9001a30,          # str x16,[x17,#0x30]    vsyncs stepped
++        0x1e210808,          # fmul s8,s0,s1          step × base rate
++        0x52a84e10,          # mov w16,#0x42700000    60.0
++        0x1e270200,          # fmov s0,w16
++        0x1e201908,          # fdiv s8,s8,s0          / 60
++        'back',
++        'real:',
++        0xb9402e11,          # ldr w17,[x16,#0x2c]    the frame rate the host measured (0 = none yet, or fps_real off)
++        ('cbz', 17, 'orig'),
++        0x1e230220,          # ucvtf s0,w17           the divisor: the measured frame rate
++        0x529d4c10,          # mov w16,#60000
++        0x1ad10a11,          # udiv w17,w16,w17       this frame's game time in 1/60000 s
++        'adrp16',
++        0xf9401e10,          # ldr x16,[x16,#0x38]
++        0x8b110210,          # add x16,x16,x17
++        'adrp17',
++        0xf9001e30,          # str x16,[x17,#0x38]    game time fed from the measured rate
++        'orig:',
++        0x1e201828,          # orig: fdiv s8,s1,s0
++        'back',
++    ]
++    start = here(); labels, at = {}, start   # label: its address (labels take no space)
++    for w in words:
++        if isinstance(w, str) and w.endswith(':'): labels[w[:-1]] = at
++        else: at += 4
++    for w in words:
++        if isinstance(w, str) and w.endswith(':'): continue
++        pc = here()
++        if w in ('adrp16', 'adrp17'): w = ADRP(int(w[4:]), pc, FS_STATE_OFF)
++        elif w == 'back': w = B(pc, site + 4)
++        elif isinstance(w, tuple): w = CBZW(w[1], pc, labels[w[2]])
+         emit(w)
+-    emit(B(here(), site + 4))
+-    emit(0x1e201828); emit(B(here(), site + 4))   # orig: fdiv s8,s1,s0; back
+-    fs_put(site, [B(site, start)], 'frame ratio: the host\'s step × base rate / 60 instead of base rate / the game\'s frame rate (state page target fps; 0 = the game\'s ratio)')
++    fs_put(site, [B(site, start)], 'frame ratio: the host\'s step × base rate / 60 instead of base rate / the game\'s frame rate (state page target fps); at target 0 base rate / the frame rate the host measured (state +0x2c), or the game\'s ratio')
+     dynamic_resolution(ctx)
+ 
+ # The game's dynamic resolution (game__gfx__DynamicResolutionParam: LoadThreshold, ReduceCounterMax, IncreaseCounterMax and a list of levels, each a ResolutionReduceScale and a
+@@ -79,7 +106,7 @@ MATCH_FRAME_STEP = {'main': [
+ 
+ BINDING = [
+     {'what': 'frame ratio from the host\'s step', 'now': 'game', 'goal': 'game', 'purpose': 'frame rate',
+-     'why': "the game's own frame-ratio division, found by its function's fingerprint on any build that keeps the function",
++     'why': "the game's own frame-ratio division, found by its function's fingerprint on any build that keeps the function; without a target the frame rate the host measured (fps_real)",
+      'checked': 'v131072 main: one function with this fingerprint, the site and its free registers read by disassembly (2026-11-08)'},
+     {'what': 'dynamic resolution: full size, or a climb on the load measured at each level', 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
+      'why': "the game's own dynamic-resolution level function and update, found by their functions' fingerprints on any build that keeps both; switchable (DM_DYNAMIC_RESOLUTION)",
+diff --git a/dm/games/README.md b/dm/games/README.md
+index 0fbdac3..d43584a 100644
+--- a/dm/games/README.md
++++ b/dm/games/README.md
+@@ -256,6 +256,7 @@ One row per profile; the notes are each profile's `README.md`.
+ | `fps_target` | Frame rate cap of the rewriter's frame step, for builds that have one (`FRAME_STEP` in the profile's `patches.py`: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0, Hyrule Warriors: Age of Calamity 1.3.0, Paper Mario: The Thousand-Year Door 1.0.1, ASTRAL CHAIN 1.0.1), or the engine's own frame limit the host writes into game memory (`hle_fpslock.c`: Monster Hunter Rise 16.0.2, which also needs `present_interval display`; any Unreal Engine 4.2x / 5 build, its `t.MaxFPS` (or `ue_fps_cvar`) and `rhi.SyncInterval` or `nvn.SyncInterval`, found by name by the rewriter, so the game asks for present interval 1 itself, and its fixed frame rate `GEngine->FixedFrameRate`, found by its reflection entry and written while the engine's `bUseFixedFrameRate` is set (DRAGON BALL: Sparking! ZERO's battles, Pikmin 4); Luigi's Mansion 3 1.4.0, its frame limiter's milliseconds per frame, with `present_interval display`; Pokémon Brilliant Diamond 1.3.0, Unity's integer `Application.targetFrameRate`, also with `present_interval display`; EA SPORTS FC 27, Frostbite's simulation rate, found by name on any build, and on 1.8d.310c its frame regulator, also with `present_interval display`; Fire Emblem Fortune's Weave, a target frame rate the game steps by, found by its readers on any build, so the game asks for present interval 1 itself; Monolith's [native interval](../../docs/reference/frame-rate.md#monoliths-native-frame-interval), found from reviewed engine implementations, with required game timing corrections matched separately). `0` (the default): the game's own step. `30` / `60`: the host decides each frame's step in whole vsyncs and keeps the frame on screen that long (`hle_nvn.c` `fstep_tick`, `nvn_fstep.h`): 1 at a 60 cap, 2 when 60 does not hold or at a 30 cap (and while a prerendered movie plays), plus one vsync while the game is behind real time after a late frame. Presents follow that hold instead of the interval the game sets. `DM_FPS_TARGET` overrides it, also from `Documents/env.txt`; the log line `frame step: game time … of real time` checks the game's speed. A derived profile (`derive_profile`) whose `main` has no `FRAME_STEP` stubs, while the profile has them for other builds, gets `fps_target 0`: without the stubs the host would present every vsync and the game would run at double speed. On a main with neither a frame step nor an engine limit the host writes, the host keeps the game's own present interval whatever `fps_target` or `DM_FPS_TARGET` says (`hle_fpslock.c` `dm_fps_lock_engine`), except with `present_interval display`, where the cap is the present interval alone: a game whose only limit is its present interval and that steps by the time that passed (Red Dead Redemption) |
+ | `fps_max` | `60` (the default) or `120`: the highest rate `fps_target` and the player's **Frame rate** take. `120` only for a game with an engine limit the host writes and whose speed was measured at 120 against 60 over the same inputs: the target then follows the frames that fit, 120 or 60 ([120 fps follows the frame step](../../docs/reference/frame-rate.md#120-fps-follows-the-frame-step)). |
+ | `fps_hold` | `on` (the default): with `fps_target`, three late frames in a row raise the hold above the cap's vsyncs (30 or 20 fps) when the last 30 frames also fall short of the cap on average, and steady frames that fit try the lower hold again. `off`: frames are never held longer than the cap's vsyncs; each is shown as soon as it is ready. For a game whose updates do not wait for the presents and step by the cap whatever the hold (Age of Calamity): there the hold only paces the screen. `DM_FPS_HOLD=on` / `off` overrides it, also from `Documents/env.txt` Paper Mario: The Thousand-Year Door sets it off too: its frame waits for three render worker threads, and holding frames left them idle, so a frame cost more the longer the hold (the hold stuck at 3 vsyncs, 20 fps, on a loaded Mac; 32–58 fps without holds) |
++| `fps_real` | `off` (the default) or `on`: with no frame rate target (`fps_target 0`, the launcher's **Frame rate** at the game's own, `DM_FPS_TARGET=0`) the host writes the whole frame rate the mean of its last 8 present intervals gives (15..60) into the frame-step state page's +0x2c at each present (`hle_nvn.c` `freal_tick`, `nvn_fstep.h` `nvn_freal_fps`), and a build whose frame-step stub reads it (Ocarina of Time's `patches.py`) steps its clock by its real frame time instead of a fixed 1/60 s, so it runs at real speed below 60 fps with no frame held: the pacing stays the game's own. `DM_FPS_REAL=1` / `0` overrides it, also from `Documents/env.txt`; the log line `real speed: game time … of real time` checks the speed ([Real speed without a frame rate target](../../docs/reference/frame-rate.md#real-speed-without-a-frame-rate-target)) |
+ | `ue_fps_cvar` | Unreal Engine games: the console variable the host writes `fps_target` into (`hle_fpslock.c`). `t.MaxFPS` (the default) is the engine's frame limit; a game whose settings apply a variable of its own to `t.MaxFPS` names that one, or the next settings change sets the game's 30 again (SHIN MEGAMI TENSEI V: Vengeance: `Project.FrameRateLimit`). The rewriter finds it by its registered name, so a name set here must be in `dm/tools/ue_cvar.py`'s `NAMES` (a red line otherwise): [Unreal's frame limit and present interval, found by name](../../docs/reference/frame-rate.md#unreals-frame-limit-and-present-interval-found-by-name) |
+ | `ue_texture_pool` | Unreal Engine games: megabytes of the texture streaming pool (`r.Streaming.PoolSize`) the host raises the game's own to, on the Mac (`hle_uecvar.c`; the rewriter finds the variable by its name, `dm/tools/ue_cvar.py`): past its pool the streamer drops the top mips of what is in view, and the Switch's pool is small (DRAGON QUEST VII Reimagined: 200 MB, 1000 on Windows). `0` (the default): the game's own pool. A larger value the game sets, or −1, stays. `DM_UE_TEXTURE_POOL` overrides it; on iOS only that switch turns it on (`Documents/env.txt`). An improvement over the Switch, not a fix: [Unreal's texture streaming pool](../../docs/reference/rendering.md#unreals-texture-streaming-pool) |
+ | `core_preempt` | `on` / `off` (the default): additionally check higher-priority runnable threads pinned to the caller's core after every thread SVC (`hle_thread.c`). `DM_PREEMPT=0` / `1` overrides it. Wake-triggered same-core handoffs apply to every game with either setting and wait until the threads the wake made runnable block, with no wall-clock cap. Metroid Dread no longer needs this key or its movie request-ring gates; see [Same-core wake handoffs](../../docs/reference/threads.md#same-core-wake-handoffs) |
+@@ -272,7 +273,10 @@ One row per profile; the notes are each profile's `README.md`.
+ | `tex_dyn_slots` | `on` / `off` (the default): a shader whose buffer-texture handle the translator could not trace to one slot gets Ryujinx's fallback arrays (`<stage>_<tb|s>_cb0_40000000`: 32 buffer textures and samplers indexed by the handle's texture / sampler ID; any other sampled texture indexes the whole pool without a key, [Texture handles from game memory index the pools](../../docs/reference/shaders.md#texture-handles-from-game-memory-index-the-pools)). With the key the replay puts slot indices in that shader's c2 texture and sampler tables (texture slot r → r, sampler slot r → r << 20) and binds slot k at element k, so the shader's own arithmetic picks the binding (`NVN_RB_TEXD` / `NVN_RB_SAMPD` in `nvn_mtl.m`). Right only where the handle comes from c2's tables: Octopath Traveler 0's 61 such vertex shaders read separate texture slots 0-10 and samplers 0-4 there and nothing else (FINAL FANTASY RESONANCE's 2,077 the texture table words 0x168-0x1c0 and sampler table words 0x568-0x590). Off, such shaders do not load. Not part of the shader chain version |
+ | `draw_barriers` | `full` (the default) / `game`: how draw passes are ordered. `full`: each waits for all earlier GPU work. `game`: by the game's own barriers (NVN asks for one before results of rendering are read), so a pass's vertex work overlaps the previous pass's fragments. Ocarina of Time's GPU time 25 → 18 ms, about 180 full barriers a frame halved. Only a barrier that orders primitives or indirect data waits for all earlier work; a fragment-only one keeps the overlap. Only vertex-stage reads of the previous pass's output without a barrier change order. `DM_NVN_BARRIER` overrides it |
+ | `vconv_range` | `on` / `off` (the default): vertex attributes the replay converts on the CPU (integer shader inputs fed float-type formats and the like, `vconv_bind` in `nvn_mtl.m`) are converted only over the vertices each draw reads (first / count, or the smallest and largest index of a direct indexed draw, kept while the index pages stay unwritten) instead of the whole bound range. Age of Calamity binds whole mesh pools: in a battle that was millions of vertices a frame. Indirect draws, per-instance streams and indices with a GPU write queued on them keep the whole range. `DM_NVN_VCONV_CHECK=1` scans the indices again at every reuse and reports differences; `DM_NVN_VCONV_RANGE=0` / `1` overrides it |
++| `romfs_substitute` | `<path>=<substitute path>` pairs, RomFS paths without a leading `/` (none by default): a RomFS image file named `*.zs` that does not begin with a zstd frame (a damaged dump) is served as the other image file (`hle_fs.c` `img_serve`; `DM_ROMFS_SUBST` replaces the list); one without a substitute is answered "not found". Ocarina of Time: three textures of its NUP begin with 12 KB of zeros; the fairy fountain's normal map, served as the game's 1x1 flat normal, ends the OptimizeChangeBanc reload loop (one core all session). |
+ | `shader_key_skip` | `<offset>+<length>` (none by default): control-section bytes every shader key hashes as zeros, in `shader_split.py` (`key_ctl`) and the host (`hle_nvn.c` `keys_hash`), for an engine that shares one control section among shaders that differ only there. Batman: Arkham Knight: `0x770+0x78`, GLSLC's compile information (+0x778..+0x791 and +0x7d0..+0x7e7); without it the game asks for shaders the map does not have, each the control section of one record with the code area of another. It must stay clear of `+0x700..+0x75f`, which the tools read; it is a shader chain input, as every `shader_*` key |
++| `upscaler_replace` | `on` (default) offers replacement of named NDSR shaders. `off` keeps the native network and hides the replacement control, including for saved environment overrides |
++| `shader_redsum` | `on` / `off` (the default): compute shaders' float atomic adds whose old value is not used (the translator's compare-and-swap loop) become a SIMD-group sum and one native float atomic add, by one lane per SIMD group (`dm/gfx/tools/dmsh_redsum.py`; threadgroup memory keeps a compare-and-swap, by that lane). `DMSH_REDSUM=1` / `0` overrides it for one build. A shader input: it is in every shader's cache key. Ocarina of Time: 6 compute shaders, its exposure and cubemap-to-SH reductions, 0.69 ms of an M5's frame |
+ | `shader_groups`, `shader_note` | `shader_split.py` source groups and the map header note (Engage: `engine` for `data.unity3d` and `Resources/`, `assets` for the Addressables bundles). Both are shader inputs, the note too: changing either one, even by a word, builds every shader of the game again. Keep them as they are when a provisional profile moves into `dm/games` |
+ 
+ ### What the game files decide at every build
+diff --git a/dm/games/game.py b/dm/games/game.py
+index 4db679f..d649938 100644
+--- a/dm/games/game.py
++++ b/dm/games/game.py
+@@ -111,6 +111,9 @@ UPSCALER_SOURCE = re.compile(r'#NDSR@0x[0-9a-f]+$')
+ 
+ def upscaler_keys(g):
+     """the game's own upscaler shaders, from its shader map (shader_split.py's source column): sorted 16-digit keys, none without a map"""
++    replace = g.get('upscaler_replace', 'on')
++    if replace not in ('on', 'off'): sys.exit(f'{g.id}: upscaler_replace must be on or off: {replace}')
++    if replace == 'off': return []   # explicitly keep the game's native NDSR network
+     p = g.table('shader_map.tsv')
+     if not p.exists(): return []
+     keys = set()
+@@ -169,6 +172,8 @@ def header_one(g):
+     if fm not in ('60', '120'): sys.exit(f'{g.id}: fps_max must be 60 or 120: {fm}')
+     fh = g.get('fps_hold', 'on')   # whether the frame step may hold a frame longer than the cap's vsyncs when frames come late (hle_nvn.c fstep_tick): on / off
+     if fh not in ('on', 'off'): sys.exit(f'{g.id}: fps_hold must be on or off: {fh}')
++    fr = g.get('fps_real', 'off')   # real speed without a frame rate target (hle_nvn.c freal_tick): the game's frame-step stub steps by the frame rate the host measures from its presents (state +0x2c; Ocarina of Time's patches.py): on / off. DM_FPS_REAL overrides
++    if fr not in ('on', 'off'): sys.exit(f'{g.id}: fps_real must be on or off: {fr}')
+     utp = g.get('ue_texture_pool', '0')   # Unreal's r.Streaming.PoolSize in MB, raised to this on the Mac (hle_uecvar.c; DM_UE_TEXTURE_POOL overrides, and turns it on for iOS): 0 = the game's own pool
+     if not utp.isdigit(): sys.exit(f"{g.id}: ue_texture_pool must be megabytes (0 = the game's own pool): {utp}")
+     ufc = g.get('ue_fps_cvar', 't.MaxFPS')   # the Unreal console variable the host writes fps_target into (hle_fpslock.c; found by name by the rewriter, ue_cvar.py NAMES): a game's own frame limit its settings apply to t.MaxFPS
+@@ -204,6 +209,8 @@ def header_one(g):
+     if tdu not in ('on', 'off') or (tdu == 'on' and tfu != 'on'): sys.exit(f'{g.id}: tex_dirty_upload must be on or off, and needs tex_flush_upload on: {tdu}')
+     tbc = g.get('tex_bc_cpu', 'off')   # decode BC-compressed textures on the CPU when the GPU has no BC support (A15/A16 and older; nvn_mtl.m uses nvn_bcdec.c): on / off
+     if tbc not in ('on', 'off'): sys.exit(f'{g.id}: tex_bc_cpu must be on or off: {tbc}')
++    tbm = g.get('tex_bc_mip_skip', 'off')   # iOS default for the lossy sampled-BC memory option, with editable launcher thresholds
++    if tbm not in ('on', 'off'): sys.exit(f'{g.id}: tex_bc_mip_skip must be on or off: {tbm}')
+     tds = g.get('tex_dyn_slots', 'off')   # shaders whose texture handle the translator could not trace to one slot: slot indices in c2, the bound slots in the fallback arrays (nvn_mtl.m): on / off
+     if tds not in ('on', 'off'): sys.exit(f'{g.id}: tex_dyn_slots must be on or off: {tds}')
+     vcr = g.get('vconv_range', 'off')   # vertex attributes converted on the CPU only over the vertices each draw reads (nvn_mtl.m vc_draw_range): on / off
+@@ -213,6 +220,8 @@ def header_one(g):
+     ups = upscaler_keys(g)   # the game's own upscaler shaders, which DM_UPSCALER=metalfx (the launcher's Game's upscaler) replaces with MetalFX's spatial scaler (nvn_mtl.m up_mfx_encode)
+     dbr = g.get('draw_barriers', 'full')   # how draw passes are ordered (nvn_mtl.m barrier_game): full = each waits for all earlier GPU work, game = by the game's own barriers, so vertex work overlaps the previous pass's fragments
+     if dbr not in ('full', 'game'): sys.exit(f'{g.id}: draw_barriers must be full or game: {dbr}')
++    rsub = ' '.join(g.get('romfs_substitute', '').split())   # damaged RomFS files (a .zs that is not a zstd stream) served as another image file (hle_fs.c img_serve; DM_ROMFS_SUBST overrides): <path>=<substitute path> ...
++    if any(w.count('=') != 1 or w.startswith(('=', '/')) or w.endswith('=') or '=/' in w for w in rsub.split()): sys.exit(f'{g.id}: romfs_substitute takes <path>=<substitute path> pairs, RomFS paths without a leading /: {rsub}')
+     om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
+     if om not in ('console', 'handheld'): sys.exit(f'{g.id}: op_mode must be console or handheld: {om}')
+     if pl == 'touch' and om != 'handheld': sys.exit(f'{g.id}: pad_layout touch needs op_mode handheld (the touch screen reaches the game only in handheld mode)')
+@@ -252,6 +261,7 @@ def header_one(g):
+          f'#define DM_GAME_FPS_TARGET {int(ft)}',
+          f'#define DM_GAME_FPS_MAX {int(fm)}',
+          f'#define DM_GAME_FPS_HOLD {int(fh == "on")}',
++         f'#define DM_GAME_FPS_REAL {int(fr == "on")}',
+          f'#define DM_GAME_UE_TEXTURE_POOL {int(utp)}',
+          f'#define DM_GAME_UE_FPS_CVAR {q(ufc)}',
+          f'#define DM_GAME_PRESENT_SNAP {int(ps == "on")}',
+@@ -266,10 +276,12 @@ def header_one(g):
+          f'#define DM_GAME_SHADER_KEY_SKIP_OFF {sko:#x}', f'#define DM_GAME_SHADER_KEY_SKIP_LEN {skl:#x}',
+          f'#define DM_GAME_TEX_DIRTY_UPLOAD {int(tdu == "on")}',
+          f'#define DM_GAME_TEX_BC_CPU {int(tbc == "on")}',
++         f'#define DM_GAME_TEX_BC_MIP_SKIP {int(tbm == "on")}',
+          f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
+          f'#define DM_GAME_DRAW_BARRIERS_GAME {int(dbr == "game")}',
+          f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
+          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
++         f'#define DM_GAME_ROMFS_SUBST {q(rsub)}',
+          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
+          '']
+     return '\n'.join(L)
+@@ -298,7 +310,7 @@ if __name__ == '__main__':
+                 ('shared_font', 'SHARED_FONT_TTF'), ('pad_layout', 'PAD_LAYOUT'), ('op_mode', 'OPMODE'), ('perf_mode', 'PERF_BOOST'),
+                 ('feedback_snap', 'FEEDBACK_SNAP'), ('tex_flush_upload', 'TEX_FLUSH_UPLOAD'),
+                 ('tex_dirty_upload', 'TEX_DIRTY_UPLOAD'), ('tex_dyn_slots', 'TEX_DYN_SLOTS'), ('gpu_timestamps', 'GPU_TS_SEGMENT'),
+-                ('vconv_range', 'VCONV_RANGE'), ('stdalloc_cap', 'STDALLOC_CAP'), ('tex_bc_cpu', 'TEX_BC_CPU'), ('ue_texture_pool', 'UE_TEXTURE_POOL'),
++                ('vconv_range', 'VCONV_RANGE'), ('stdalloc_cap', 'STDALLOC_CAP'), ('fps_real', 'FPS_REAL'), ('romfs_substitute', 'ROMFS_SUBST'), ('tex_bc_cpu', 'TEX_BC_CPU'), ('tex_bc_mip_skip', 'TEX_BC_MIP_SKIP'), ('ue_texture_pool', 'UE_TEXTURE_POOL'),
+                 ('enc_thread', 'ENC_THREAD'), ('draw_barriers', 'DRAW_BARRIERS_GAME'), ('game_args', 'ARGS'), ('game_env', 'ENV')]
+         def val(macro):   # the header's C spelling → the file's plain spelling
+             v = M.get('DM_GAME_' + macro)
+diff --git a/dm/games/settings.tsv b/dm/games/settings.tsv
+index 1b139d4..0aa5edb 100644
+--- a/dm/games/settings.tsv
++++ b/dm/games/settings.tsv
+@@ -14,13 +14,16 @@
+ #   label, note  the setting's name and the line under it (may be empty; only for a setting with a cost: latency, memory, heat)
+ #   meta      optional, key=value pairs separated by ; (settings.py META lists the keys; docs/frontends.md, The settings list, describes them):
+ #             level=basic  a setting a front end shows first;  needs=<VAR>=<value>  a sub-setting, drawn only while the row that sets <VAR> has that value
+-DM_FPS_TARGET	choice	30=30 fps,60=60 fps,120=120 fps?DM_GAME_FPS_MAX==120&platform:mac	DM_GAME_FPS_TARGET	DM_GAME_FPS_TARGET!=0	Game	Frame rate		level=basic
++DM_FPS_TARGET	choice	0=Game's own?DM_GAME_FPS_REAL==1,30=30 fps,60=60 fps,120=120 fps?DM_GAME_FPS_MAX==120&platform:mac	DM_GAME_FPS_TARGET	DM_GAME_FPS_TARGET!=0	Game	Frame rate		level=basic
+ DM_PRESENT_INTERVAL	choice	game=30 fps,display=60 fps	display	DM_GAME_PRESENT_DISPLAY==1&DM_GAME_FPS_TARGET==0	Game	Frame rate		level=basic
+ DM_DYNAMIC_RESOLUTION	toggle	-	0	fixups:DYNAMIC_RESOLUTION	Game	Dynamic resolution	Lets the game lower its resolution under load. Turn off to keep full resolution for the selected console mode.
+ DM_RENDER_SCALE	range	0.5:1.0:0.05	1.0	fixups:RENDER_SCALE	Game	Render scale		level=basic
+ DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Game	Console mode		level=basic
+ DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Game	Upscaling	Uses more GPU time and can increase heat.
+ DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX	game	DM_GAME_UPSCALER_N!=0	Game	Game's upscaler
++DM_NVN_BC_MIP_SKIP	toggle	-	1|0	DM_GAME_TEX_BC_MIP_SKIP!=0	Game	Reduce BC texture memory	Skips the finest mip level when both size thresholds are met. Saves memory but can blur nearby surfaces. Restart the game to apply.	level=basic
++DM_NVN_BC_MIP_MIN_WIDTH	choice	128=128 px,256=256 px,512=512 px,1024=1024 px,2048=2048 px,4096=4096 px,8192=8192 px,16384=16384 px	512	DM_GAME_TEX_BC_MIP_SKIP!=0	Game	Minimum texture width	Original texture width in pixels.	level=basic;needs=DM_NVN_BC_MIP_SKIP=1
++DM_NVN_BC_MIP_MIN_HEIGHT	choice	128=128 px,256=256 px,512=512 px,1024=1024 px,2048=2048 px,4096=4096 px,8192=8192 px,16384=16384 px	512	DM_GAME_TEX_BC_MIP_SKIP!=0	Game	Minimum texture height	Original texture height in pixels.	level=basic;needs=DM_NVN_BC_MIP_SKIP=1
+ DM_LANG	choice	languages	build:DM_LANG	languages>1	Game	Game language		level=basic
+ DM_FULLSCREEN	choice	0=Window,1=Fullscreen	0	platform:mac	Game	Display mode		level=basic
+ DM_PICTURE_FIT	choice	fit=Fit,fill=Fill	fit	platform:ios	Game	Picture	Fill crops the game's 16:9 picture to cover the screen. Health bars, subtitles or maps near the edges can be cut off. A full-screen picture without cropping needs a patch for each game.
+@@ -42,4 +45,5 @@ DM_NVN_ENC_THREAD	toggle	-	1|DM_GAME_ENC_THREAD	gfxapi:nvn	Performance	Encode th
+ DM_NVN_PREFETCH	toggle	-	DM_GAME_NVN_PREFETCH|1	gfxapi:nvn	Performance	Shader prefetch	Loads each program's shader libraries in the background, whether a draw uses them or not.
+ DM_BC6H_RGB9E5	toggle	-	0	DM_GAME_TEX_BC_CPU==1&platform:ios&gfxapi:nvn	Performance	Downsample HDR textures	Saves memory on devices without hardware BC textures, with slightly less precise HDR textures.
+ DM_FPS_HOLD	toggle	on/off	DM_GAME_FPS_HOLD	DM_GAME_FPS_TARGET!=0	Performance	Hold frames when late
++DM_FPS_REAL	toggle	-	DM_GAME_FPS_REAL	DM_GAME_FPS_REAL==1	Performance	Real speed at the game's own frame rate	With Frame rate at the game's own, the game's clock follows the measured frame time below 60 fps instead of running slow.
+ DM_METAL_HUD	toggle	-	0	always	Performance	Performance HUD
+diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
+index 18a57a1..c8a3740 100644
+--- a/dm/gfx/nvn/hle_nvn.c
++++ b/dm/gfx/nvn/hle_nvn.c
+@@ -2544,6 +2544,31 @@ static int fstep_hold(void) {
+     }
+     return h;
+ }
++// Real speed without a frame step (nvn_fstep.h nvn_freal_fps; profile fps_real, DM_FPS_REAL=1 / 0): with no target (DM_FPS_TARGET=0, the game's own pacing) a game whose clock
++// steps a fixed 1/60 s per update (Ocarina of Time: the framework's FPS stays 60 whatever the frames take) runs in slow motion below 60 fps. Once per present the host writes the
++// whole frame rate its last FREAL_WIN present intervals give (15..60) at state +0x2c; the game's frame-ratio stub (its patches.py) divides by it in
++// place of the game's 60 and adds each step at +0x38 (units of 1/60000 s). The pacing is untouched: nothing is held, the frames come as they come. Only a main with the stub
++// reads +0x2c; an older rewrite leaves +0x38 at 0, which the speed line names
++static int freal_on(void) {
++    static int on = -1;
++    if (on < 0) { const char *e = getenv("DM_FPS_REAL"); on = e ? strcmp(e, "0") != 0 : dm_prof()->fps_real; }
++    return on;
++}
++static void freal_tick(const win_t *o) {
++    static nvn_freal r; static uint64_t prev, t0, g0, n; static double vs_sum; static int lo = 999, hi;
++    uint64_t t = now_ns();
++    if (!prev) { prev = t; LOG("[nvn] real speed: no frame rate target, so the game's clock follows the measured present interval (mean of %d, 1..%g vsyncs → %d..60 fps at state +0x2c); frames are not held (%s; DM_FPS_REAL=0 turns it off)", FREAL_WIN, FREAL_MAX, (int)(60 / FREAL_MAX), getenv("DM_FPS_REAL") ? "DM_FPS_REAL" : "game profile fps_real"); return; }
++    double vs = (t - prev) * 60.0 / 1e9; prev = t;
++    int fps = nvn_freal_fps(&r, vs);
++    __atomic_store_n((uint32_t *)(dm_fps_state + 0x2c), (uint32_t)fps, __ATOMIC_RELAXED);
++    vs_sum += vs > FREAL_MAX ? FREAL_MAX : vs; n++; if (fps < lo) lo = fps; if (fps > hi) hi = fps;
++    if (o->presents % 1800 == 0) {   // game time fed by the stub against real time (1.000 = normal speed)
++        uint64_t g = __atomic_load_n((uint64_t *)(dm_fps_state + 0x38), __ATOMIC_RELAXED);
++        if (t0) LOG("[nvn] real speed: game time %.2f s in %.2f s (%.3f of real time); present interval mean %.2f vsyncs over %llu, fps fed %d..%d%s", (g - g0) / 60000.0, (t - t0) / 1e9,
++                    (g - g0) / 60000.0 / ((t - t0) / 1e9), n ? vs_sum / n : 0, (unsigned long long)n, lo, hi, g ? "" : " (nothing stepped: this main's frame-ratio stub does not read +0x2c)");
++        t0 = t; g0 = g; vs_sum = 0; n = 0; lo = 999; hi = 0;
++    }
++}
+ // Once per present, before this frame's period is taken: the time since the previous frame's start (shown) and the frame's cost decide this frame's hold and the next frame's step.
+ // Cost = max(CPU: the time between the frames' starts without the pacing wait, GPU: the latest finished frame's GPU time), in vsyncs
+ static void fstep_tick(const win_t *o, int c) {
+@@ -2647,6 +2672,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
+     if (dm_fps_state) { static int was; if (c != was) { char why[48] = ""; if (movie) snprintf(why, sizeof why, " (a movie of %d pictures a second)", movie); else if (c == 30 && was == 60 && thermal_capped()) snprintf(why, sizeof why, " (thermal state serious)");
+         LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, why); was = c; } }
+     if (c) fstep_tick(o, c);
++    else if (dm_fps_state && freal_on()) freal_tick(o);   // no target: the game's clock follows the measured present interval
+     dm_fps_lock_tick();   // after the frame step: at 120 fps the target follows the hold just decided
+     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
+     present_cfg(o);
+diff --git a/dm/gfx/nvn/nvn_fstep.h b/dm/gfx/nvn/nvn_fstep.h
+index df3b773..b5807c8 100644
+--- a/dm/gfx/nvn/nvn_fstep.h
++++ b/dm/gfx/nvn/nvn_fstep.h
+@@ -253,3 +253,25 @@ static inline int nvn_fstep_gpu_slowed(nvn_fgpu *g, double gpu, const nvn_fstep
+     }
+     return nvn_fgpu_slow(g);
+ }
++
++// Real speed without a frame step (hle_nvn.c freal_tick; profile fps_real, DM_FPS_REAL): with no frame rate target the game paces itself, and one whose clock steps a fixed
++// 1/60 s per update (Ocarina of Time: the framework's FPS is 60 whatever the frames take) runs in slow motion below 60 fps. The host measures the time between its presents,
++// averages the last FREAL_WIN (even steps across the 1 / 2 vsync jitter of a game that presents on the display link's ticks: 45 fps is 1, 2, 1, 2 vsyncs), clamps the mean to
++// 1..FREAL_MAX vsyncs and hands the game the whole frame rate that matches (60 / mean, 15..60), which its frame-step stub feeds to the game's own frame-ratio division.
++// Nothing is held or paced: the frames come as they come, and the game's clock follows them. Only a sample above FREAL_MAX is clamped before it enters the mean (a load, a
++// stall: counted as FREAL_MAX, not replayed); a short one is not (frames that jitter 0.9 / 1.1 around a steady 60 average 1.0, and clamping them below would read 57 fps
++// and run the game fast)
++#define FREAL_WIN 8
++#define FREAL_MAX 4.0
++typedef struct { double hist[FREAL_WIN], sum; int n, at; } nvn_freal;
++// One present: the time since the previous present in vsyncs (1/60 s). Returns the whole frame rate the game steps by, 15..60
++static inline int nvn_freal_fps(nvn_freal *r, double vsyncs) {
++    if (!(vsyncs <= FREAL_MAX)) vsyncs = FREAL_MAX;   // also a NaN
++    if (vsyncs < 0) vsyncs = 0;
++    if (r->n == FREAL_WIN) r->sum -= r->hist[r->at]; else r->n++;
++    r->hist[r->at] = vsyncs; r->sum += vsyncs; r->at = (r->at + 1) % FREAL_WIN;
++    double mean = r->sum / r->n;
++    if (mean < 1.0) mean = 1.0; else if (mean > FREAL_MAX) mean = FREAL_MAX;
++    int fps = (int)(60.0 / mean + 0.5);
++    return fps < 15 ? 15 : fps > 60 ? 60 : fps;
++}
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index 636fe79..d034bbb 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -677,7 +677,8 @@ static void res_top_once(NSError *err) {
+     if (!atomic_exchange(&done, 1)) res_top("[RED] GPU out of memory");
+     uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+     if (now - atomic_load(&since) > 60000000000ull) { atomic_store(&since, now); atomic_store(&fails, 0); }
+-    if (atomic_fetch_add(&fails, 1) >= 32) MDIE("the GPU is out of memory: 32 command buffers failed within a minute (GPU allocated %llu MB, recommended working set %llu MB)", (unsigned long long)(g_dev.currentAllocatedSize >> 20), (unsigned long long)(g_dev.recommendedMaxWorkingSetSize >> 20));
++    const int limit = TARGET_OS_IPHONE ? 1 : 32;
++    if (atomic_fetch_add(&fails, 1) + 1 >= limit) MDIE("the GPU is out of memory: %d command buffer(s) failed within a minute (GPU allocated %llu MB, recommended working set %llu MB)", limit, (unsigned long long)(g_dev.currentAllocatedSize >> 20), (unsigned long long)(g_dev.recommendedMaxWorkingSetSize >> 20));
+ }
+ // Since the last call: residency commits (count, time), additions by source line (count, MB; the four largest by bytes) and removals
+ void mtl_res_stats(char *out, size_t n) {
+@@ -3025,7 +3026,7 @@ void mtl_tex_init(const tex_t *t) {
+ // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
+ // spare: the texture the last re-upload replaced, kept resident and written by the next re-upload once the GPU has passed spare_fence (a texture the CPU rewrites every frame, a movie frame,
+ // alternates between two textures instead of allocating one per frame: Link's Awakening's title movie made and freed an 8 MB texture a frame)
+-@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, sub, own, lost_gen; const void *span; int sparse, vbase, part; uint8_t *edge[2]; uint32_t edge_n[2], stored; id ps; id<MTLBuffer> eb; uint64_t *ph, up_frame, up_sub; uint32_t nph, missed; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
++@interface NvPkg : NSObject { @public id<MTLTexture> tex, spare, view; uint64_t stamp, seen, hash, spare_fence, vgen, vseen, sub, own, lost_gen; const void *span; int sparse, vbase, part, full_mips; uint8_t *edge[2]; uint32_t edge_n[2], stored; id ps; id<MTLBuffer> eb; uint64_t *ph, up_frame, up_sub; uint32_t nph, missed; } @end   // hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK; span: its tracked range (nvn_dirty_span, NULL = untracked);
+ // sparse: in a sparse virtual pool, read through its page table (hle_nvn.c nvn_sparse_*), vgen the page table's generation at the upload and vseen at the last look; view: what it is bound as (sparse_view)
+ // ps: its placement sparse texture (NvSparse, sparse_make), which tex is: mapped and uploaded tile by tile (sparse_sync)
+ // edge: the uploaded bytes of the storage's first and last host pages where other data shares them (pkg_edges_take); in eb from the first GPU store into its storage on (pkg_edges_gpu),
+@@ -3761,6 +3762,41 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
+     res_add(buf); [g_up_keep addObject:buf]; *off = (uint64_t)addr - a;
+     return buf;
+ }
++// Lossy memory option for sampled BC assets only. Non-sampling operations resolve the full
++// texture first, so GPU writes, copies and explicit readbacks keep NVN's original dimensions.
++static _Thread_local int g_bc_full_mips;
++typedef struct { int enabled; unsigned width, height; } bc_mip_config;
++static bc_mip_config g_bc_mip = {.enabled = -1};
++static unsigned bc_mip_dimension(const char *e, unsigned fallback) {
++    char *end = NULL; long n = e ? strtol(e, &end, 10) : 0;
++    return e && end != e && !*end && n >= 128 && n <= 16384 ? (unsigned)n : fallback;
++}
++static bc_mip_config bc_mip_settings(const char *mode, const char *width, const char *height, int enabled) {
++    // Preserve older env files whose switch value was the common dimension threshold.
++    unsigned legacy = bc_mip_dimension(mode, 0);
++    if (mode) enabled = !strcmp(mode, "1") || legacy;
++    return (bc_mip_config){enabled, bc_mip_dimension(width, legacy ?: 512), bc_mip_dimension(height, legacy ?: 512)};
++}
++static unsigned bc_mip_skip(const tex_t *t, MTLTextureDescriptor *d) {
++    if (g_bc_mip.enabled < 0) {
++        int enabled = 0;
++#if TARGET_OS_IPHONE
++        enabled = dm_prof()->tex_bc_mip_skip;
++#endif
++        g_bc_mip = bc_mip_settings(getenv("DM_NVN_BC_MIP_SKIP"), getenv("DM_NVN_BC_MIP_MIN_WIDTH"), getenv("DM_NVN_BC_MIP_MIN_HEIGHT"), enabled);
++        MLOG("sampled BC textures: mip0 omission %s, minimum width %u, minimum height %u (copies and GPU writers restore full mips)",
++             g_bc_mip.enabled ? "on" : "off", g_bc_mip.width, g_bc_mip.height);
++    }
++    return !g_bc_full_mips && g_bc_mip.enabled && t->d.format >= 0x41 && t->d.format <= 0x50
++        && t->d.width >= g_bc_mip.width && t->d.height >= g_bc_mip.height && d.mipmapLevelCount > 1 && d.mipmapLevelCount == t->d.levels && t->d.samples <= 1
++        && !(t->d.flags & (NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE))
++        && !(d.usage & (MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget)) && !(t->pool && nvn_sparse_pool(t->pool))
++        && (t->d.target == 1 || t->d.target == 4 || t->d.target == 8 || t->d.target == 9);
++}
++static unsigned bc_mip_base(const tex_t *t, id<MTLTexture> m) {
++    return m && t->d.format >= 0x41 && t->d.format <= 0x50 && t->d.levels > 1
++        && m.width == (t->d.width >> 1) && m.height == (t->d.height >> 1) && m.mipmapLevelCount == t->d.levels - 1;
++}
+ // A re-upload read every layer and level of a texture from guest memory when one page of it was written. Ocarina of Time fills a 1800x1380x8 RGBA8 array (38.5 MB) layer by layer
+ // from its CPU while it draws with it: 13 whole uploads in 6 frames, six of them in one frame, for 3 to 936 of its 2,466 pages each (docs/reference/frame-rate.md). A layer's level
+ // (a 3D texture's level) lies in a byte range of its own (nvn_tex.c), so the images to read are those with a page written since the stamp; pages are 16 KB, so an image that shares
+@@ -3785,11 +3821,13 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
+     MTLTextureDescriptor *d = tex_desc(t, 1);
+     if (!d) return nil;
+     d.usage |= keep & (MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView);
++    unsigned skip = stamp ? bc_mip_skip(t, d) : 0;
++    if (skip) { d.width >>= 1; d.height >>= 1; d.mipmapLevelCount--; }
+     int rb_shift = rb_packed_shift(t->d.format);   // the RGB565 family is repacked into Metal's order on the CPU (rb_packed_shift)
+     uint32_t bc_pf = 0; int bc_bpp = 0;
+     int bc_cpu = g_bc_cpu && nvn_bc_unpacked(t->d.format, &bc_pf, &bc_bpp);
+     int linear = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;   // linear storage no view could take (linear_fit): its rows are copied on the CPU
+-    int direct = !bc_cpu && !linear && !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
++    int direct = !skip && !bc_cpu && !linear && !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
+     if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;
+     id<MTLTexture> mt = reuse && reuse.pixelFormat == d.pixelFormat && reuse.width == d.width && reuse.height == d.height && reuse.mipmapLevelCount == d.mipmapLevelCount && reuse.textureType == d.textureType
+                         && (reuse.usage & d.usage) == d.usage
+@@ -3808,13 +3846,13 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
+     unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;   // a cube array's depth counts layer-faces (tex_desc)
+     // Taken after the stamp and the protect: a write that lands from here on faults and is found at the next look
+     uint8_t *need = NULL; unsigned nimg = (unsigned)d.mipmapLevelCount * layers, nup = 0;
+-    if (prev && prev != mt && stamp && !sparse && !linear && bpb && d.sampleCount <= 1 && prev.pixelFormat == mt.pixelFormat && prev.textureType == mt.textureType && prev.sampleCount == mt.sampleCount
++    if (!skip && prev && prev != mt && stamp && !sparse && !linear && bpb && d.sampleCount <= 1 && prev.pixelFormat == mt.pixelFormat && prev.textureType == mt.textureType && prev.sampleCount == mt.sampleCount
+         && prev.width == mt.width && prev.height == mt.height && prev.depth == mt.depth && prev.arrayLength == mt.arrayLength && prev.mipmapLevelCount == mt.mipmapLevelCount)
+         need = pkg_written(t, span, since, (unsigned)d.mipmapLevelCount, layers, &nup);
+     if (need && nup == nimg) { free(need); need = NULL; }
+     if (need && taken) *taken = nimg - nup;
+     size_t total = 0;
+-    for (unsigned l = 0; l < d.mipmapLevelCount; l++) {
++    for (unsigned l = skip; l < d.mipmapLevelCount + skip; l++) {
+         uint32_t w, h, z; tex_lsize(t, l, &w, &h, &z);
+         unsigned n = layers; if (need) { n = 0; for (unsigned y = 0; y < layers; y++) n += need[l * layers + y]; }
+         total += (size_t)((w + bw - 1) / bw) * bpb * ((h + bh - 1) / bh) * z * n;
+@@ -3866,14 +3904,14 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
+         // put its storage twice into the residency set (Switch Sports Resort's first court frame: 855 textures, 1.8 GB of source buffers for 908 MB of storage; t_upload_src)
+         if (upsrc && g_up_seq != src_batch) { uint64_t mo2; id<MTLBuffer> u2 = up_big_src((uint64_t)t->mem, t->L.size, &mo2); if (u2) { upsrc = u2; mb = (__bridge void *)u2; mo = mo2; } }
+         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits;
+-        for (unsigned l = 0; enc_ok && l < d.mipmapLevelCount; l++) {
++        for (unsigned l = skip; enc_ok && l < d.mipmapLevelCount + skip; l++) {
+             uint32_t w, h, z; tex_lsize(t, l, &w, &h, &z);
+             size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
+             for (unsigned y = 0; y < layers; y++) {
+                 if (need && !need[l * layers + y]) { up_copy_add(prev, MTLSizeMake(w, h, z), mt, y, l); continue; }
+                 size_t poff; id<MTLBuffer> params = up_param_alloc(&poff);   // Metal 4 has no setBytes: the parameter block of each deswizzle is cut from a shared block (no new GPU buffer each time)
+                 if (nvn_deswz_gpu_encode_m4(g_up_ce, g_up_ct, params, poff, (__bridge id<MTLBuffer>)mb, mo, &t->d, l, y, stg, stg_off + off, pitch)) { enc_ok = 0; break; }
+-                up_blit_add(stg, stg_off + off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l);
++                up_blit_add(stg, stg_off + off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l - skip);
+                 off += pitch * rows * z;
+             }
+         }
+@@ -3903,7 +3941,7 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
+     size_t total_bc = 0;
+     if (bc_cpu) {
+         total_bc = 0;
+-        for (unsigned l = 0; l < d.mipmapLevelCount; l++) {
++        for (unsigned l = skip; l < d.mipmapLevelCount + skip; l++) {
+             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
+             unsigned n = layers; if (need) { n = 0; for (unsigned y = 0; y < layers; y++) n += need[l * layers + y]; }
+             total_bc += (size_t)w * h * z * n * (size_t)bc_bpp;
+@@ -3916,7 +3954,7 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
+     int zb = zblock_on() && t->d.format >= 0x79 && t->d.format <= 0x94; if (zb) { g_zb_ser = t->serial; g_zb_n = (int)MIN(d.mipmapLevelCount, 16u); memset(g_zb, 0, sizeof g_zb); memset(g_zb_tot, 0, sizeof g_zb_tot); }
+     // CPU-side scratch for the compressed block data when bc_cpu (one level-slice at a time)
+     uint8_t *bc_tmp = NULL; size_t bc_tmp_sz = 0;
+-    for (unsigned l = 0; l < d.mipmapLevelCount; l++) {
++    for (unsigned l = skip; l < d.mipmapLevelCount + skip; l++) {
+         uint32_t w, h, z; tex_lsize(t, l, &w, &h, &z);
+         size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
+         for (unsigned y = 0; y < layers; y++) {
+@@ -3929,7 +3967,7 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
+                 for (uint32_t zz = 0; zz < z; zz++)
+                     nvn_bc_decode(t->d.format, bc_tmp + (size_t)zz * pitch * rows, pitch, w, h,
+                                   (uint8_t *)stg.contents + off + (size_t)zz * dst_pitch * h, dst_pitch);
+-                up_blit_add(stg, off, dst_pitch, dst_pitch * h, MTLSizeMake(w, h, z), mt, y, l);
++                up_blit_add(stg, off, dst_pitch, dst_pitch * h, MTLSizeMake(w, h, z), mt, y, l - skip);
+                 off += dst_pitch * h * z;
+                 continue;
+             }
+@@ -3942,7 +3980,7 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
+             if (zb && l < 16) { const uint64_t *q = (const uint64_t *)((const uint8_t *)stg.contents + off); size_t nb = pitch * rows * z / 16;
+                 for (size_t i = 0; i < nb; i++) g_zb[l] += !(q[2 * i] | q[2 * i + 1]);
+                 g_zb_tot[l] += (uint32_t)nb; }
+-            up_blit_add(stg, off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l);
++            up_blit_add(stg, off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l - skip);
+             off += pitch * rows * z;
+         }
+     }
+@@ -4829,7 +4867,11 @@ static int tex_storage_readable(const tex_t *t) {
+ // in_storage (may be NULL): set when, off the submit thread, the texture's content is its storage and making the host texture would take an upload, or would make one the CPU's
+ // content never reaches; nil is returned then and the caller reads the storage (mtl_read_texels)
+ static id<MTLTexture> tex_mtl_(const tex_t *ct, int *in_storage);
+-static id<MTLTexture> tex_mtl(const tex_t *ct) { AP_B; id<MTLTexture> r = tex_mtl_(ct, NULL); AP_E(4); return r; }
++static id<MTLTexture> tex_sampled(const tex_t *ct) { AP_B; id<MTLTexture> r = tex_mtl_(ct, NULL); AP_E(4); return r; }
++static id<MTLTexture> tex_mtl(const tex_t *ct) {
++    int saved = g_bc_full_mips; g_bc_full_mips = 1;
++    id<MTLTexture> r = tex_sampled(ct); g_bc_full_mips = saved; return r;
++}
+ // Diagnostic DM_NVN_REUPLOADS=1: a line for each re-upload of a texture taken from its storage (the first 400): its shape and size, how much of it was read from guest memory
+ // (pkg_written), the time it took on the submit thread, the frame and the submission (a frame's replay is many, and each looks at the pages once), the pages written since its upload and where the first of them lies,
+ // and the GPU writes stored into its storage since then (gsb_swz)
+@@ -5047,7 +5089,9 @@ static MTLTextureUsage tbuf_usage(MTLPixelFormat pf) {
+         if (!pk) { id<MTLTexture> made = nil; NvSparse *ps = sparse_make(t, 0, &made);
+             if (ps) { pk = [NvPkg new]; pk->ps = ps; pk->tex = made; pk->sparse = 1; sparse_sync(ps, t, 1); tex_put(t->serial, pk); return pk->tex; } }
+         if (pk) {   // Already uploaded: check the covered pages only if there has been a guest write since the last check
+-            if (gsb_held(t->mem, t->L.size)) return pk->view ? pk->view : pk->tex;   // its storage lacks a GPU write this command buffer stores through any texture over those bytes (gsb_store): uploaded at its next use if the CPU wrote it
++            int promote = g_bc_full_mips && bc_mip_base(t, pk->tex);
++            if (promote) pk->full_mips = 1;
++            if (!promote && gsb_held(t->mem, t->L.size)) return pk->view ? pk->view : pk->tex;   // its storage lacks a GPU write this command buffer stores through any texture over those bytes (gsb_store): uploaded at its next use if the CPU wrote it
+             uint64_t now = nvn_dirty_now(), own = nvn_dirty_own_writes();
+             int tracked = pk->span != NULL;   // kept from the upload: a texture's pool stays registered while the texture lives
+             // Looked at already in this submission: it keeps that look's texture. The queue's thread replays a submission after the game queued it, so the writes the game made
+@@ -5073,28 +5117,33 @@ static MTLTextureUsage tbuf_usage(MTLPixelFormat pf) {
+             if (whole && clean) { clean = 0; static int nl; if (nl++ < 8) MLOG("re-uploading a texture holding images copied from one uploaded before a batch was dropped ser=%llu", (unsigned long long)t->serial); }
+             if (!clean && atomic_load_explicit(&g_up_lost_n, memory_order_relaxed) && up_lost_take(pk->tex)) whole = 1;
+             if (clean && atomic_load_explicit(&g_up_lost_n, memory_order_relaxed) && up_lost_take(pk->tex)) { clean = 0; whole = 1; uint64_t k = atomic_load(&g_up_lost_redo); if (k <= 3 || !atomic_load(&g_up_lost_n)) MLOG("re-uploading a texture whose upload was dropped ser=%llu (%llu in total, %d left in the record)", (unsigned long long)t->serial, (unsigned long long)k, atomic_load(&g_up_lost_n)); }
++            if (promote) { clean = 0; whole = 1; }
+             if (clean) {
+                 if (dirtycheck() && !kept && !pk->sparse && !pk->stored && full_hash(t->mem, t->L.size) != pk->hash) { g_pkg_miss++; pkg_miss_report(pk, t, now); }
+                 return pk->view ? pk->view : pk->tex;
+             }
+-            if (!whole && !pk->sparse && pkg_edges_clean(pk, t)) return pk->view ? pk->view : pk->tex;   // only the pages it shares with other data were written
++            if (!promote && !whole && !pk->sparse && pkg_edges_clean(pk, t)) return pk->view ? pk->view : pk->tex;   // only the pages it shares with other data were written
+             // Pool content changed (streamed assets written into the same storage, a movie frame): switch to another texture, as in-flight draws still read the old one. That is the spare
+             // when the GPU is done with it (see NvPkg), else a new one; the old one becomes the spare (pkg_upload_ made nt resident)
+             id<MTLTexture> reuse = nil;
+             if (pk->spare) { pthread_mutex_lock(&g_mu); uint64_t done = g_done; pthread_mutex_unlock(&g_mu); if (pk->spare_fence <= done && pk->spare.usage == pk->tex.usage) reuse = pk->spare; }
+             if (reuse && !own_object_free(reuse)) reuse = nil;   // serials that took it over (cpu_unc_drop) still draw it
+             uint64_t st, vg = nvn_sparse_gen(), b0 = g_bp_up_bytes, lg = atomic_load(&g_up_lost_gen), t0 = bp_now(); unsigned taken = 0;
++            int saved = g_bc_full_mips; g_bc_full_mips |= pk->full_mips;
+             id<MTLTexture> nt = pkg_upload(t, &st, reuse, pk->tex.usage, whole ? nil : pk->tex, pk->span, pk->stamp, &taken);
++            g_bc_full_mips = saved;
++            if (!nt && promote) return nil;
+             reup_note(pk, t, taken, g_bp_up_bytes - b0, bp_now() - t0);
+             if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; pk->stored = 0; pk->part = taken != 0; if (!taken) pk->lost_gen = lg;
+                 if (pk->spare && pk->spare != nt) defer_obj_release(pk->spare);   // still in use, or of another shape: retired as before
+                 if (pk->sparse) sparse_view(pk, t);
+                 zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "re-upload");
+-                pk->spare = old; pk->spare_fence = g_fence + 1; own_note(t->serial); pk->stamp = st; pk->vgen = pk->vseen = vg; pk->span = nvn_dirty_span(t->mem, t->L.size); pk->seen = st; g_pkg_reuploads++; pkg_hash_take(pk, t); pkg_edges_take(pk, t); }
++                if (promote) { defer_obj_release(old); pk->spare = nil; } else pk->spare = old; pk->spare_fence = g_fence + 1; own_note(t->serial); pk->stamp = st; pk->vgen = pk->vseen = vg; pk->span = nvn_dirty_span(t->mem, t->L.size); pk->seen = st; g_pkg_reuploads++; pkg_hash_take(pk, t); pkg_edges_take(pk, t); }
+             return pk->view ? pk->view : pk->tex;
+         }
+         pk = [NvPkg new];
+         pk->sparse = t->pool && nvn_sparse_pool(t->pool); pk->vgen = pk->vseen = nvn_sparse_gen();
++        pk->full_mips = g_bc_full_mips;
+         pk->lost_gen = atomic_load(&g_up_lost_gen);
+         if (!pk->sparse) { pk->sub = g_sub_serial; pk->own = nvn_dirty_own_writes(); }
+         pk->tex = pkg_upload(t, &pk->stamp, nil, 0, nil, NULL, 0, NULL);
+@@ -7281,7 +7330,7 @@ static MTLTextureType ttype(int target, int fallback) {
+ void mtl_set_queue_origin_lower_left(int on) { g_queue_origin_ll = on != 0; }
+ void mtl_set_tex_pool_n(int n) { g_tpool_n = n; }
+ void mtl_set_samp_pool_n(int n) { g_spool_n = n; }
+-static id<MTLTexture> treg_tex(const treg_t *r) { return r->gone ? tex_made(&r->t) : tex_mtl(&r->t); }   // Caller holds g_rmu
++static id<MTLTexture> treg_tex(const treg_t *r) { return r->gone ? tex_made(&r->t) : tex_sampled(&r->t); }   // Caller holds g_rmu
+ // The upload stamp of the packaged texture an ID's view was made from (tex_by_id's guest-write shortcut); none for sparse ones (their page table changes too) or another base. Caller holds g_rmu
+ static void treg_pkg_stamp(treg_t *rp, id<MTLTexture> base) {
+     rp->view_span = NULL; if (!rp->view_pkg) return;
+@@ -7365,7 +7414,7 @@ static int treg_swizzle(const treg_t *r, MTLPixelFormat base_pf, int in_place, u
+         }
+         // The view's levels count from the texture's level 0, which a sparse texture's host texture may start past (tex_level_shift): Resident Evil 4's streamed 512x512 and 1024x1024
+         // textures, with only their two or three smallest levels mapped, are sampled through views of levels 1 + 0 and 2 + 0, which read past the host texture's one level and were left out
+-        NSUInteger lb = tex_level_shift(&rp->t, base), n = base.mipmapLevelCount + lb;
++        NSUInteger lb = tex_level_shift(&rp->t, base) + bc_mip_base(&rp->t, base), n = base.mipmapLevelCount + lb;
+         NSUInteger l0 = r.v.set_levels ? r.v.base_level : 0;
+         if (l0 >= n) { RED_ONCE(109, "texture view id %d starts at mip %lu beyond %lu levels", tid, (unsigned long)l0, (unsigned long)n); return nil; }
+         NSUInteger nl = r.v.set_levels && r.v.nlevels ? r.v.nlevels : n - l0;
+@@ -15047,7 +15096,8 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
+     // Off the submit thread, tex_mtl_ itself says when the content is the storage: the look above can be overtaken (the submit thread marks the texture CPU-written meanwhile), and a
+     // texture no thread has resolved is read there rather than made here (GitHub issue #1814)
+     int in_storage = 0; AP_B;
+-    id<MTLTexture> mt = tex_mtl_(t, &in_storage); AP_E(4);
++    int saved = g_bc_full_mips; g_bc_full_mips = 1;
++    id<MTLTexture> mt = tex_mtl_(t, &in_storage); g_bc_full_mips = saved; AP_E(4);
+     if (in_storage) { read_texels_storage(t, level, layer0, r, dst, row, img); return; }
+     if (!mt || !tex_level_ok(mt, level, "CPU readback")) { memset(dst, 0, img * nz); return; }
+     mtl_finish_gpu_at(WS_READTEX);
+diff --git a/dm/gfx/nvn/nvn_owner.m b/dm/gfx/nvn/nvn_owner.m
+index 5d32af7..dc95046 100644
+--- a/dm/gfx/nvn/nvn_owner.m
++++ b/dm/gfx/nvn/nvn_owner.m
+@@ -330,9 +330,14 @@ static void ghost_used(uint64_t k) {   // a lookup or a put of k's ghost entry:
+     ghost_held_add((__bridge void *)old, -1); obj_drop(old); hm_del_id(&g_ghost, &k); own_note(k);
+ }
+ // Idle entries past NGHOST go, least recently used first, at most `budget` of them; the first entry in use ends the walk (every one after it was used later)
++static unsigned ghost_limit(void) {
++    static unsigned value;
++    if (!value) { const char *e = getenv("DM_NVN_GHOST"); int n = e ? atoi(e) : NGHOST; value = n < 1 ? 1 : n > NGHOST ? NGHOST : (unsigned)n; }
++    return value;
++}
+ static void ghost_trim(unsigned budget) {
+     uint64_t frame = own_hook_frame(), sub = own_hook_submission();
+-    for (; budget && g_ghost.n > NGHOST && g_ghost_lru; budget--) {
++    for (; budget && g_ghost.n > ghost_limit() && g_ghost_lru; budget--) {
+         const ghost_use *u = g_ghost_lru;
+         if (frame - u->frame < GHOST_IDLE && sub - u->sub < GHOST_IDLE_SUBS) break;
+         ghost_del_locked(u->serial);
+diff --git a/dm/gfx/tests/Makefile b/dm/gfx/tests/Makefile
+index fd6e819..e135b2c 100644
+--- a/dm/gfx/tests/Makefile
++++ b/dm/gfx/tests/Makefile
+@@ -748,3 +748,12 @@ check_t_sparse_copy: RUN_ENV = MTL_DEBUG_LAYER=1
+ t_bc_cpu: t_bc_cpu.m $(MTL_T_DEP)
+ 	clang $(CFLAGS) -fobjc-arc -o $@ t_bc_cpu.m $(MTL_T_SRC) $(FW)
+ check_t_bc_cpu: RUN_ENV = MTL_DEBUG_LAYER=1
++
++t_bc_mip_skip: t_bc_mip_skip.m $(MTL_T_DEP)
++	clang $(CFLAGS) -fobjc-arc -o $@ t_bc_mip_skip.m $(MTL_T_SRC) $(FW)
++.PHONY: check_t_bc_mip_skip
++check_t_bc_mip_skip: t_bc_mip_skip
++	env -u DM_NVN_BC_MIP_SKIP MTL_DEBUG_LAYER=1 ./t_bc_mip_skip
++	MTL_DEBUG_LAYER=1 DM_NVN_BC_MIP_SKIP=0 ./t_bc_mip_skip
++	MTL_DEBUG_LAYER=1 DM_NVN_BC_MIP_SKIP=1 ./t_bc_mip_skip
++	MTL_DEBUG_LAYER=1 DM_NVN_BC_MIP_SKIP=512 ./t_bc_mip_skip
+diff --git a/dm/gfx/tests/t_bc_mip_skip.m b/dm/gfx/tests/t_bc_mip_skip.m
+new file mode 100644
+index 0000000..edc7542
+--- /dev/null
++++ b/dm/gfx/tests/t_bc_mip_skip.m
+@@ -0,0 +1,138 @@
++// Real Metal allocation, upload, sampled views and full-resolution copy fallback.
++#include "../nvn/nvn_mtl.m"
++void *front_metal_layer(void) { return NULL; }
++module_t *module_of(const void *p) { (void)p; return NULL; }
++module_t *g_mod; int g_nmod;
++void svc_thread_dump(void) {}
++uint64_t now_ns(void) { return bp_now(); }
++static int checks, failed;
++#define CHECK(label,c) do { checks++; if (!(c)) { failed++; fprintf(stderr,"FAIL: %s\n",label); } } while (0)
++static void finish(void) {
++    CHECK("submission completes",mtl_wait(mtl_sub_commit(),5000000000ull));
++    CHECK("no GPU error",!mtl_last_commit_error());
++}
++static unsigned block_pattern(int format, unsigned color, uint8_t block[16]) {
++    memset(block,0,16);
++    if(format==0x41) { block[0]=color==0?0:color==1?0xe0:0x1f;block[1]=color==0?0xf8:color==1?7:0;return 8; }
++    // BC7 mode 6, distinct raw blocks. This test compares all compressed bytes, without decoding.
++    block[0]=0x40;block[1]=17+color;block[2]=43+color;block[8]=101+color;return 16;
++}
++static void contents(id<MTLTexture> image, unsigned guest_base, int decoded, int format) {
++    unsigned bb=format==0x41?8:16;
++    size_t length=0;
++    for(unsigned l=0;l<image.mipmapLevelCount;l++) {
++        unsigned w=MAX(image.width>>l,1u),h=MAX(image.height>>l,1u);
++        length+=(decoded?(size_t)w*h*4:(size_t)((w+3)/4)*((h+3)/4)*bb)*image.arrayLength;
++    }
++    id<MTLBuffer> rb=[g_dev newBufferWithLength:length+256 options:MTLResourceStorageModeShared];
++    id<MTLCommandBuffer> cb=q_cb(); id<MTLBlitCommandEncoder> b=[cb blitCommandEncoder]; size_t off=256;
++    for(unsigned l=0;l<image.mipmapLevelCount;l++)for(unsigned a=0;a<image.arrayLength;a++) {
++        unsigned w=MAX(image.width>>l,1u),h=MAX(image.height>>l,1u);
++        size_t row=decoded?w*4:((w+3)/4)*bb, rows=decoded?h:(h+3)/4;
++        [b copyFromTexture:image sourceSlice:a sourceLevel:l sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(w,h,1)
++            toBuffer:rb destinationOffset:off destinationBytesPerRow:row destinationBytesPerImage:row*rows]; off+=row*rows;
++    }
++    [b endEncoding]; [cb commit]; [cb waitUntilCompleted];
++    CHECK("readback completes",cb.status==MTLCommandBufferStatusCompleted); off=256;
++    for(unsigned l=0;l<image.mipmapLevelCount;l++)for(unsigned a=0;a<image.arrayLength;a++) {
++        unsigned w=MAX(image.width>>l,1u),h=MAX(image.height>>l,1u),color=(l+guest_base+a)%3;
++        uint8_t px[4]={color==0?255:0,color==1?255:0,color==2?255:0,255};
++        uint8_t block[16];block_pattern(format,color,block);
++        size_t units=decoded?(size_t)w*h:(size_t)((w+3)/4)*((h+3)/4),unit=decoded?4:bb;
++        int same=1;for(size_t i=0;i<units;i++)if(memcmp((uint8_t*)rb.contents+off+i*unit,decoded?px:block,unit)){same=0;break;}
++        CHECK("every pixel/block of every retained mip and slice matches its guest mip",same); off+=units*unit;
++    }
++}
++static void upload(int target, int decoded, int gpu, int direct, int format) {
++    static uint64_t serial=990000;
++    tex_t t={.magic=MAGIC('T','E','X',0),.serial=serial++,.has_layout=1};
++    t.d=(nvn_texdesc){.target=target,.format=format,.width=512,.height=512,.depth=target==9?12:2,.levels=10,.samples=1};
++    if(target==1||target==8)t.d.depth=1;
++    nvn_tex_layout(&t.d,&t.L);
++    size_t size=(t.L.size+getpagesize()-1)&~(size_t)(getpagesize()-1); void *mem=NULL;
++    if(posix_memalign(&mem,getpagesize(),size))abort(); memset(mem,0,size);
++    pool_t pool={.magic=MAGIC('P','O','O','L'),.mem=mem,.size=size,.flags=NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED|NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
++    t.pool=&pool;t.mem=mem;mtl_pool_add(mem,size);nvn_dirty_add_range(mem,size);
++    unsigned layers=target==1?1:target==8?6:t.d.depth;
++    for(unsigned l=0;l<10;l++)for(unsigned a=0;a<layers;a++) {
++        unsigned w=MAX(512u>>l,1u),h=w,nb=((w+3)/4)*((h+3)/4),c=(l+a)%3;
++        uint8_t block[16];unsigned bb=block_pattern(format,c,block);uint8_t *data=malloc(nb*bb);
++        for(unsigned i=0;i<nb;i++)memcpy(data+i*bb,block,bb);
++        CHECK("guest mip swizzles",!nvn_swizzle(&t.d,l,a,data,((w+3)/4)*bb,mem)); free(data);
++    }
++    g_bc_cpu=decoded;g_nvn_deswz_gpu=gpu;g_direct_upload_on=direct;
++    mtl_sub_begin();id<MTLTexture> image=tex_sampled(&t);finish();
++    CHECK("sampled allocation exists",image!=nil);if(!image)abort();
++    unsigned skip=g_bc_mip.enabled?1:0;
++    CHECK("actual allocation omits mip0 only when enabled",image.width==(512u>>skip)&&image.height==(512u>>skip)&&image.mipmapLevelCount==10-skip);
++    CHECK("array/cube slices preserved",image.arrayLength==layers);contents(image,skip,decoded,format);
++    MTLTextureDescriptor *full=tex_desc(&t,1); id<MTLTexture> baseline=[g_dev newTextureWithDescriptor:full];
++    if(skip)CHECK("allocation is less than half of full mip chain",image.allocatedSize*2<baseline.allocatedSize);
++    else CHECK("default allocation unchanged",image.allocatedSize==baseline.allocatedSize);
++    view_t v={.set_levels=1,.base_level=2,.nlevels=3};mtl_reg_tex(250,&t,&v);
++    os_unfair_lock_lock(&g_rmu);id<MTLTexture> view=tex_by_id(250);os_unfair_lock_unlock(&g_rmu);
++    CHECK("guest mip2 view starts at its retained level",view.width==128&&view.mipmapLevelCount==3);
++    v.base_level=0;v.nlevels=1;mtl_reg_tex(251,&t,&v);
++    os_unfair_lock_lock(&g_rmu);view=tex_by_id(251);os_unfair_lock_unlock(&g_rmu);
++    CHECK("mip0-only view uses finest retained level",view.width==(512u>>skip)&&view.mipmapLevelCount==1);
++    // A second serial shares the package and follows a full-resolution copy promotion.
++    tex_t alias=t;alias.serial=serial++;mtl_tex_cpu_written(&alias);
++    mtl_sub_begin();CHECK("aliases share the reduced allocation",tex_sampled(&alias)==image);
++    if(!decoded) {
++        unsigned bb=format==0x41?8:16;size_t bytes=64*64*bb,rbsize=bytes+getpagesize();void *copy=NULL;
++        if(posix_memalign(&copy,getpagesize(),rbsize))abort();memset(copy,0,rbsize);mtl_pool_add(copy,rbsize);
++        p_copy_b2t c={.tex=&t,.src=(uint64_t)copy,.has_view=1,.view={.set_levels=1,.base_level=1},.r={0,0,0,256,256,1}};
++        copy_t2b(&c,sizeof c);finish();
++        uint8_t green[16];block_pattern(format,1,green);int same=1;
++        for(size_t i=0;i<bytes;i+=bb)if(memcmp((uint8_t*)copy+i,green,bb)){same=0;break;}
++        CHECK("guest mip1 copies with its original size and contents",same);
++        mtl_pool_del(copy);mtl_drain();free(copy);mtl_sub_begin();
++    }
++    id<MTLTexture> restored=tex_mtl(&t);finish();
++    CHECK("non-sampling use restores all guest levels",restored.width==512&&restored.mipmapLevelCount==10);contents(restored,0,decoded,format);
++    CHECK("shared package follows full allocation",tex_sampled(&alias)==restored);
++    if(skip) { NvPkg *pk=tex_get(t.serial);CHECK("promotion retires the reduced allocation instead of retaining an unusable spare",pk->spare==nil); }
++    os_unfair_lock_lock(&g_rmu);view=tex_by_id(251);os_unfair_lock_unlock(&g_rmu);
++    CHECK("cached sampled view follows promotion",view.width==512);
++    // A later CPU write and re-upload must not shrink a package used by a GPU operation.
++    dm_guest_write_prepare(mem,size);((uint8_t*)mem)[0]^=1;
++    mtl_sub_begin();CHECK("reupload retains full dimensions",tex_sampled(&t).width==512);finish();
++    mtl_reg_tex(250,NULL,NULL);mtl_reg_tex(251,NULL,NULL);
++    mtl_tex_release(&t);mtl_tex_release(&alias);mtl_drain();mtl_alias_drop_pool(&pool);nvn_dirty_remove_range(mem);mtl_pool_del(mem);mtl_drain();free(mem);
++}
++static void exclusions(void) {
++    tex_t t={0};t.d=(nvn_texdesc){.target=1,.format=0x41,.width=512,.height=512,.depth=1,.levels=10,.samples=1};
++    bc_mip_config configured=g_bc_mip;g_bc_mip=(bc_mip_config){1,512,512};
++    CHECK("large BC asset eligible",bc_mip_skip(&t,tex_desc(&t,1)));
++    t.d.format=0x79;CHECK("ASTC unchanged",!bc_mip_skip(&t,tex_desc(&t,1)));
++    t.d.format=0x25;CHECK("uncompressed unchanged",!bc_mip_skip(&t,tex_desc(&t,1)));t.d.format=0x41;
++    t.d.width=511;CHECK("both dimensions must reach threshold",!bc_mip_skip(&t,tex_desc(&t,1)));t.d.width=512;
++    t.d.height=511;CHECK("height threshold is independent",!bc_mip_skip(&t,tex_desc(&t,1)));t.d.height=512;
++    g_bc_mip.width=1024;CHECK("higher width excludes square asset",!bc_mip_skip(&t,tex_desc(&t,1)));
++    t.d.width=1024;CHECK("asymmetric width and height eligible",bc_mip_skip(&t,tex_desc(&t,1)));
++    g_bc_mip.height=1024;CHECK("higher height excludes wide asset",!bc_mip_skip(&t,tex_desc(&t,1)));
++    t.d.width=512;g_bc_mip.width=g_bc_mip.height=512;
++    t.d.levels=1;CHECK("single mip unchanged",!bc_mip_skip(&t,tex_desc(&t,1)));t.d.levels=10;
++    t.d.target=2;CHECK("3D unchanged",!bc_mip_skip(&t,tex_desc(&t,1)));t.d.target=1;
++    const int flags[]={NVN_TEXTURE_FLAGS_IMAGE,NVN_TEXTURE_FLAGS_COMPRESSIBLE,NVN_TEXTURE_FLAGS_LINEAR,NVN_TEXTURE_FLAGS_SPARSE};
++    for(unsigned i=0;i<sizeof flags/sizeof*flags;i++){t.d.flags=flags[i];CHECK("writable/linear/sparse unchanged",!bc_mip_skip(&t,tex_desc(&t,1)));}t.d.flags=0;
++    MTLTextureDescriptor *d=tex_desc(&t,1);d.usage|=MTLTextureUsageShaderWrite;CHECK("kept write usage unchanged",!bc_mip_skip(&t,d));
++    g_bc_mip=configured;
++}
++int main(void) { @autoreleasepool {
++    mtl_init();
++    for(int decoded=0;decoded<2;decoded++)for(int gpu=0;gpu<2;gpu++)for(int target=1;target<=9;target++)if(target==1||target==4||target==8||target==9)upload(target,decoded,gpu,1,0x41);
++    for(int gpu=0;gpu<2;gpu++)upload(4,0,gpu,1,0x4d);
++    exclusions();
++    const struct {const char *mode,*w,*h;int fallback,on;unsigned width,height;} cases[]={
++        {NULL,NULL,NULL,0,0,512,512},{NULL,NULL,NULL,1,1,512,512},
++        {"0","1024","256",1,0,1024,256},{"1",NULL,NULL,0,1,512,512},
++        {"1","1024","256",0,1,1024,256},{"1024",NULL,NULL,0,1,1024,1024},
++        {"1024","2048","512",0,1,2048,512},{"bad","512junk","-1",1,0,512,512},
++        {"1","0","16385",0,1,512,512},{"1","128","16384",0,1,128,16384}};
++    for(unsigned i=0;i<sizeof cases/sizeof*cases;i++) {
++        bc_mip_config c=bc_mip_settings(cases[i].mode,cases[i].w,cases[i].h,cases[i].fallback);
++        CHECK("switch, independent thresholds, defaults and legacy parsing",c.enabled==cases[i].on&&c.width==cases[i].width&&c.height==cases[i].height);
++    }
++    printf("t_bc_mip_skip: %d checks, %d failed\n",checks,failed);return failed!=0;
++}}
+diff --git a/dm/gfx/tests/t_fstep.c b/dm/gfx/tests/t_fstep.c
+index 865d79e..a26e0d2 100644
+--- a/dm/gfx/tests/t_fstep.c
++++ b/dm/gfx/tests/t_fstep.c
+@@ -547,6 +547,21 @@ int main(void) {
+         pw = 3; check(nvn_fstep_drain_cut(40, 17, 9, 0, &pw) == 37 && pw == 0, "a drain counted no larger than the pacing wait it was part of");
+         pw = 0; check(nvn_fstep_drain_cut(0, 17, 0, 5, &pw) == 0, "the first frame (no previous start): nothing to cut");
+     }
++    {   // Real speed without a frame step (nvn_freal_fps): the whole frame rate the measured present intervals give
++        nvn_freal r = {0}; int f = 0;
++        for (int i = 0; i < 20; i++) f = nvn_freal_fps(&r, 1.0); check(f == 60, "real speed: steady 60 reads 60 fps");
++        for (int i = 0; i < 20; i++) f = nvn_freal_fps(&r, i & 1 ? 0.9 : 1.1); check(f == 60, "  jitter 0.9 / 1.1 around 60 still reads 60 (short samples are not clamped)");
++        for (int i = 0; i < 20; i++) f = nvn_freal_fps(&r, i & 1 ? 1.0 : 2.0); check(f == 40, "  frames of 1, 2, 1, 2 vsyncs read 40 fps (the mean, not the last frame)");
++        for (int i = 0; i < 20; i++) f = nvn_freal_fps(&r, 1.333); check(f == 45, "  22.2 ms frames read 45 fps");
++        for (int i = 0; i < 20; i++) f = nvn_freal_fps(&r, 2.0); check(f == 30, "  33.3 ms frames read 30 fps");
++        for (int i = 0; i < 20; i++) f = nvn_freal_fps(&r, 0.5); check(f == 60, "  a mean under one vsync is clamped: never above 60");
++        for (int i = 0; i < 20; i++) f = nvn_freal_fps(&r, 6.0); check(f == 15, "  frames of 6 vsyncs read 15 fps (the mean is clamped at 4)");
++        for (int i = 0; i < 20; i++) f = nvn_freal_fps(&r, 1.0);
++        f = nvn_freal_fps(&r, 36.0); check(f >= 40 && f < 60, "  a 600 ms stall enters the mean as 4 vsyncs, not 36");
++        for (int i = 0; i < FREAL_WIN; i++) f = nvn_freal_fps(&r, 1.0); snprintf(b, sizeof b, "  and is out of the mean %d frames later (%d fps)", FREAL_WIN, f); check(f == 60, b);
++        nvn_freal e = {0}; check(nvn_freal_fps(&e, 1.5) == 40, "  the first sample alone gives a rate (1.5 vsyncs: 40 fps)");
++        check(nvn_freal_fps(&e, 0.0 / 0.0) >= 15, "  a NaN sample counts as a long frame, no NaN out");
++    }
+     printf("== %d checks, %d failed ==\n", checks, fail);
+     return fail != 0;
+ }
+diff --git a/dm/host/hle.h b/dm/host/hle.h
+index 40583e2..e35cc6b 100644
+--- a/dm/host/hle.h
++++ b/dm/host/hle.h
+@@ -115,7 +115,7 @@ void dm_applet_leave(void);
+ static inline void dm_applet_leave_(const char *const *name) { (void)name; dm_applet_leave(); }
+ #define DM_APPLET(name) const char *const dm_applet_ __attribute__((cleanup(dm_applet_leave_))) = (name); dm_applet_enter(dm_applet_)
+ // Audio pause / resume following the lifecycle (called by the front end on going to background / returning to foreground)
+-extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_state): +0 float target fps, +4 movie flag (dm_movie_hz() != 0, written by the host at each present: Tears of the Kingdom's step stub caps its first, undecided steps by it), +0x10 float render scale, +0x18 double game seconds stepped; NULL when the build has none
++extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_state): +0 float target fps, +4 movie flag (dm_movie_hz() != 0, written by the host at each present: Tears of the Kingdom's step stub caps its first, undecided steps by it), +0x10 float render scale, +0x18 double game seconds stepped, +0x2c u32 measured FPS, +0x38 u64 measured game time in 1/60000 s; NULL when the build has none
+ extern int dm_fps_step_max;   // loader.c: the largest step the frame step stubs give the game (patch_nso.py ctx.step_max; 0 = FSTEP_MAX)
+ int dm_movie_hz(void);   // hle_movie.c: the picture rate of the movie playing (the fastest video decoder that handed out a picture in the last half second), 0 when none: the frame step follows it
+ void dm_movie_picture(const void *dec, const char *lib, int64_t ts_ns, int unknown_hz);   // hle_movie.c: video decoder dec (nn::movie's or nn::codec's) handed out a picture of this time; unknown_hz: its rate while the times give none
+diff --git a/dm/host/hle_fs.c b/dm/host/hle_fs.c
+index a799e82..bf970be 100644
+--- a/dm/host/hle_fs.c
++++ b/dm/host/hle_fs.c
+@@ -176,6 +176,26 @@ static int img_path(const char *p, int *mi, int64_t *k) {
+     }
+     return 0;
+ }
++// DM_ROMFS_OVERLAY's folders, each preceded by its subfolder for the console mode (docked/ or handheld/) when it has one: game file replacements that differ by mode
++// (Ocarina of Time's resolution table: 1280x720 handheld, 1920x1080 docked). Taken when the RomFS mounts, so a later change of the operation mode does not swap files the game already read
++__attribute__((weak)) int dm_opmode(void) { return 0; }   // hle_oe.c's (the console mode); the file-system tests link no hle_oe.c: handheld
++static void rom_overlay_set(char *dst, size_t n, const char *env) {
++    char *roots = strdup(env); if (!roots) die("rom overlay allocation failed");
++    const char *mode = dm_opmode() == 1 ? "docked" : "handheld"; char *save = NULL; dst[0] = 0;
++    // DM_ROMFS_OVERLAY_SET=<name>: each folder's <name>/ subfolder stands for the folder (a set of replacements beside others, e.g. Ocarina of Time's render resolutions);
++    // =none: no replacements (the game's own files). Unset: the folder itself
++    const char *set = getenv("DM_ROMFS_OVERLAY_SET"); if (set && !*set) set = NULL;
++    if (set && !strcmp(set, "none")) { LOG("fs rom overlay: none (DM_ROMFS_OVERLAY_SET=none)"); free(roots); return; }
++    for (char *root = strtok_r(roots, ":", &save); root; root = strtok_r(NULL, ":", &save)) {
++        char sub[1100], setdir[1100]; struct stat st;
++        if (set) { snprintf(setdir, sizeof setdir, "%s/%s", root, set);
++            if (!stat(setdir, &st) && S_ISDIR(st.st_mode)) root = setdir; else LOG("[RED] fs rom overlay: %s has no set %s (DM_ROMFS_OVERLAY_SET): the folder itself is served", root, set); }
++        snprintf(sub, sizeof sub, "%s/%s", root, mode);
++        if (!stat(sub, &st) && S_ISDIR(st.st_mode)) { if (dst[0]) strlcat(dst, ":", n); strlcat(dst, sub, n); LOG("fs rom overlay: %s for the %s mode", sub, mode); }
++        if (dst[0]) strlcat(dst, ":", n); strlcat(dst, root, n);
++    }
++    free(roots);
++}
+ static void save_old_names(const char *from, const char *to);
+ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
+     pthread_once(&g_txn_lock_once, txn_locks_init);
+@@ -189,7 +209,7 @@ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
+     atomic_store(&g_mnt[g_nmnt].poison, 0);
+     atomic_store(&g_mnt[g_nmnt].first_write_ns, 0);
+     const char *overlay = !strcmp(name, "rom") ? getenv("DM_ROMFS_OVERLAY") : NULL;
+-    if (overlay) strlcpy(g_mnt[g_nmnt].overlay, overlay, sizeof g_mnt[0].overlay);
++    if (overlay) rom_overlay_set(g_mnt[g_nmnt].overlay, sizeof g_mnt[0].overlay, overlay);
+     // The transaction directory cannot be set up (leftovers cannot be cleared / clone failed, which really happens on a full disk): do not exit; mount the committed directory read-only -- saves still read, every write fails, commits are no-ops, the committed version is untouched, and the front end is told
+     // (each of these three failures used to call die: with the phone's storage full the game exited as soon as it mounted its saves)
+     int txn_err = 0, k = 0;
+@@ -546,7 +566,7 @@ HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory",
+     if (r == RES_OK && overlay) {
+         PATH_LOCK();
+         for (int i = 0; i < g_nmnt; i++) if (mnt_named(&g_mnt[i], name)) {
+-            strlcpy(g_mnt[i].overlay, overlay, sizeof g_mnt[i].overlay); break;
++            rom_overlay_set(g_mnt[i].overlay, sizeof g_mnt[i].overlay, overlay); break;
+         }
+     }
+     return r;
+@@ -1058,6 +1078,62 @@ HLE_FORCE("_ZN2nn2fs7UnmountEPKc", "fsp-srv; host mounts are permanent, a no-op,
+ }
+ 
+ // ---------- Files ----------
++// A RomFS image file named *.zs that does not begin with a zstd frame (or a skippable frame) cannot be decompressed. Such a file is served as the substitute the profile key
++// romfs_substitute names for it (<damaged path>=<substitute path> pairs, image paths without the mount; DM_ROMFS_SUBST replaces the profile's list), else answered "path not found", as a file
++// the dump lacks; one [RED] line names it. Ocarina of Time (Switch 2), its NUP: Tex/CmnTex_Map_Soil_FairyFountain_Floor_D_Nrm.bntx.zs, Tex/Rock_WaterTemple_Gate_M_01_Nrm.bntx.zs and
++// Tex/RBake_Scene_GanonStage_G_2_1_d0_t0.bntx.zs begin with 12 KB of zeros (their SHA-256 in the container matches: damaged when dumped). Served as stored, the fairy fountain model that uses
++// the first (Model/Land_FairyFountain_Base_A.Land_FairyFountain_Base_A_01.bfres) failed to load, and the OptimizeChangeBanc thread (main+0xf7a0) asked for it again about 22 times a second for
++// the whole session: its pass over the 852 entries of the area never ended "all done", so it never went back to its 16 ms sleep (one core, ~980 ms/s, on the Mac and the iPad), and a
++// ParallelDecompThread decompressed the 2.4 MB model each time (~750 ms/s). "Not found" fails the model the same way (the game then asks for the .bntx, also missing); the game's own 1x1 flat
++// normal map (Tex/Dummy_Flat_Normal_CmnTex_Chara_DetailMap_Nrm.bntx.zs) in its place loads the model once, and both threads go idle: Mac CPU 412% -> 180% (medians of 5-minute runs).
++// Checked once per entry, at its first open or entry type (4 bytes); DM_ROMFS_ZSTD_CHECK=0 serves such files as stored
++#define IMG_ENT_ZCHECKED 4   // in memory only: the zstd head check has run for this entry
++#define IMG_ENT_BADZSTD 8    // in memory only: ... and found no zstd frame at the start
++#ifndef DM_GAME_ROMFS_SUBST
++#define DM_GAME_ROMFS_SUBST ""
++#endif
++static int64_t img_subst(mount_t *m, const char *path, const char **donor, int *dlen) {   // the substitute entry for a damaged path (-1: none named, or not in the image)
++    const char *c = strchr(path, ':'), *rest = c ? c + 1 : path, *s = getenv("DM_ROMFS_SUBST");
++    while (*rest == '/') rest++;
++    if (!s) s = dm_prof()->romfs_subst;
++    size_t rl = strlen(rest);
++    while (*s) {
++        while (*s == ' ' || *s == '\t') s++;
++        const char *end = s + strcspn(s, " \t"), *eq = memchr(s, '=', (size_t)(end - s));
++        if (eq && (size_t)(eq - s) == rl && !memcmp(s, rest, rl)) {
++            char d[1024]; snprintf(d, sizeof d, "/%.*s", (int)(end - eq - 1), eq + 1);
++            if (donor) { *donor = eq + 1; *dlen = (int)(end - eq - 1); }
++            int64_t k = img_find(m->img, d);
++            return k > 0 && m->img->e[k].type ? k : -1;
++        }
++        s = end;
++    }
++    return -1;
++}
++// The entry to serve for entry k: k itself, a damaged file's substitute, or -1 (answered "not found")
++static int64_t img_serve(mount_t *m, int64_t k, const char *path) {
++    img_ent *ent = &m->img->e[k];
++    const char *nm = m->img->names + ent->name;
++    if (!ent->type || ent->nlen <= 3 || memcmp(nm + ent->nlen - 3, ".zs", 3)) return k;   // other files keep their flags as they are
++    uint8_t f = __atomic_load_n(&ent->flags, __ATOMIC_ACQUIRE);
++    if (f & IMG_ENT_ZCHECKED) return f & IMG_ENT_BADZSTD ? img_subst(m, path, NULL, NULL) : k;
++    static int on = -1; if (on < 0) { const char *e = getenv("DM_ROMFS_ZSTD_CHECK"); on = !(e && *e == '0'); }
++    int bad = 0; int64_t r = k;
++    if (on && ent->b >= 4) {
++        uint8_t h[4];
++        if (romfs_image_read(m->img->fd, h, 4, (off_t)ent->a)) {
++            uint32_t mg = (uint32_t)h[0] | (uint32_t)h[1] << 8 | (uint32_t)h[2] << 16 | (uint32_t)h[3] << 24;
++            bad = mg != 0xFD2FB528u && (mg & 0xFFFFFFF0u) != 0x184D2A50u;
++            if (bad) {
++                const char *d = NULL; int dl = 0; r = img_subst(m, path, &d, &dl);
++                if (r >= 0) LOG("[RED] fs %s is not a zstd stream (begins %02x %02x %02x %02x; a damaged dump): served as %.*s (romfs_substitute)", path, h[0], h[1], h[2], h[3], dl, d);
++                else LOG("[RED] fs %s is not a zstd stream (begins %02x %02x %02x %02x; a damaged dump): answered \"not found\"%s (DM_ROMFS_ZSTD_CHECK=0 serves it as stored)", path, h[0], h[1], h[2], h[3], d ? ", its substitute is not in the image" : "");
++            }
++        }
++    }
++    __atomic_fetch_or(&ent->flags, (uint8_t)(IMG_ENT_ZCHECKED | (bad ? IMG_ENT_BADZSTD : 0)), __ATOMIC_RELEASE);
++    return r;
++}
+ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) { dm_thread_service_request();
+     Result (*sdk_open)(uint64_t *, const char *, int) = sdk_path_call(path, "_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci");
+     if (sdk_open) return sdk_opened(sdk_open(out, path, mode), out, "_ZN2nn2fs9CloseFileENS0_10FileHandleE");
+@@ -1069,6 +1145,7 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
+         img_ent *ent = &g_mnt[mi].img->e[k];   // a damaged file is named once, at its first open
+         if ((ent->flags & IMG_ENT_DAMAGED) && !(__atomic_fetch_or(&ent->flags, IMG_ENT_REPORTED, __ATOMIC_RELAXED) & IMG_ENT_REPORTED))
+             LOG("[RED] fs %s failed the NCA's hash check when it was extracted (a damaged NSP, --allow-damaged); its bytes may be wrong", path);
++        if ((k = img_serve(&g_mnt[mi], k, path)) < 0) return RES_PATH_NOT_FOUND;
+         *out = FH_OUT(IMG_HANDLE(mi, k));
+         if (g_flag.fs) LOG("fs open [%.2fs] %s mode=%d → image entry %lld", (now_ns() - g_t0_ns) / 1e9, path, mode, (long long)k);
+         return RES_OK;
+@@ -1292,7 +1369,7 @@ HLE_FORCE("_ZN2nn2fs15RenameDirectoryEPKcS2_", "fsp-srv → rename(2) of a direc
+ HLE_FORCE("_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", "fsp-srv → stat(2)", Result, h_fs_GetEntryType, int32_t *out, const char *path) { dm_thread_service_request();
+     SDK_PATH(path, "_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", Result (*)(int32_t *, const char *), out, path);
+     int mi; int64_t k;
+-    if (img_path(path, &mi, &k)) { if (k < 0) return err_res("stat", path); *out = g_mnt[mi].img->e[k].type ? ENT_FILE : ENT_DIR; return RES_OK; }
++    if (img_path(path, &mi, &k)) { if (k < 0) return err_res("stat", path); if (img_serve(&g_mnt[mi], k, path) < 0) return RES_PATH_NOT_FOUND; *out = g_mnt[mi].img->e[k].type ? ENT_FILE : ENT_DIR; return RES_OK; }   // a damaged .zs without a substitute is "not found" here too (img_serve)
+     HP(path); struct stat st;
+     if (stat(hp, &st)) return err_res("stat", hp);
+     *out = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; return RES_OK;
+diff --git a/dm/host/hle_profile.c b/dm/host/hle_profile.c
+index c141b04..5ff0847 100644
+--- a/dm/host/hle_profile.c
++++ b/dm/host/hle_profile.c
+@@ -107,9 +107,18 @@ static uint64_t num(const char *v, uint64_t dflt) {
+ #define DM_GAME_SHADER_KEY_SKIP_OFF 0
+ #define DM_GAME_SHADER_KEY_SKIP_LEN 0
+ #endif
++#ifndef DM_GAME_FPS_REAL
++#define DM_GAME_FPS_REAL 0
++#endif
++#ifndef DM_GAME_ROMFS_SUBST
++#define DM_GAME_ROMFS_SUBST ""
++#endif
+ #ifndef DM_GAME_TEX_BC_CPU
+ #define DM_GAME_TEX_BC_CPU 0
+ #endif
++#ifndef DM_GAME_TEX_BC_MIP_SKIP
++#define DM_GAME_TEX_BC_MIP_SKIP 0
++#endif
+ #ifndef DM_GAME_UE_TEXTURE_POOL
+ #define DM_GAME_UE_TEXTURE_POOL 0
+ #endif
+@@ -143,6 +152,7 @@ static void defaults(void) {
+           copy_str(P.ver[P.nver].build, sizeof P.ver[0].build, k[i].build); copy_str(P.ver[P.nver].ver, sizeof P.ver[0].ver, k[i].ver); P.nver++;
+       } }
+     P.present_display = DM_GAME_PRESENT_DISPLAY; P.core_preempt = DM_GAME_CORE_PREEMPT; P.alloc_big_align = DM_GAME_ALLOC_BIG_ALIGN;
++    P.fps_real = DM_GAME_FPS_REAL; copy_str(P.romfs_subst, sizeof P.romfs_subst, DM_GAME_ROMFS_SUBST);
+     P.fps_target = DM_GAME_FPS_TARGET; P.fps_hold = DM_GAME_FPS_HOLD; P.present_snap = DM_GAME_PRESENT_SNAP; P.pso_mtl4 = DM_GAME_PSO_MTL4;
+ #ifdef DM_GAME_SHARED_FONT_TTF
+     P.shared_font_ttf = DM_GAME_SHARED_FONT_TTF;
+@@ -159,7 +169,7 @@ static void defaults(void) {
+     P.nvn_api_major = 0; P.nvn_api_minor = 0;
+ #endif
+     P.stdalloc_cap = DM_GAME_STDALLOC_CAP; P.shader_skip_off = DM_GAME_SHADER_KEY_SKIP_OFF; P.shader_skip_len = DM_GAME_SHADER_KEY_SKIP_LEN;
+-    P.tex_bc_cpu = DM_GAME_TEX_BC_CPU; P.ue_texture_pool = DM_GAME_UE_TEXTURE_POOL; P.enc_thread = DM_GAME_ENC_THREAD; P.draw_barriers_game = DM_GAME_DRAW_BARRIERS_GAME;
++    P.tex_bc_cpu = DM_GAME_TEX_BC_CPU; P.tex_bc_mip_skip = DM_GAME_TEX_BC_MIP_SKIP; P.ue_texture_pool = DM_GAME_UE_TEXTURE_POOL; P.enc_thread = DM_GAME_ENC_THREAD; P.draw_barriers_game = DM_GAME_DRAW_BARRIERS_GAME;
+     copy_str(P.args, sizeof P.args, DM_GAME_ARGS);
+     copy_str(P.genv, sizeof P.genv, DM_GAME_ENV);
+     copy_str(P.source, sizeof P.source, "compiled game_profile.h");
+@@ -225,7 +235,10 @@ static void set_kv(const char *k, const char *v) {
+         if (e != v && *e == '+') { uint64_t l = strtoull(e + 1, NULL, 0); P.shader_skip_off = (uint32_t)o; P.shader_skip_len = (uint32_t)l; }
+         else P.shader_skip_off = P.shader_skip_len = 0;
+     }
++    else if (!strcmp(k, "fps_real")) P.fps_real = truthy(v);
++    else if (!strcmp(k, "romfs_substitute")) copy_str(P.romfs_subst, sizeof P.romfs_subst, v);
+     else if (!strcmp(k, "tex_bc_cpu")) P.tex_bc_cpu = truthy(v);
++    else if (!strcmp(k, "tex_bc_mip_skip")) P.tex_bc_mip_skip = truthy(v);
+     else if (!strcmp(k, "ue_texture_pool")) P.ue_texture_pool = (int)num(v, (uint64_t)P.ue_texture_pool);
+     else if (!strcmp(k, "enc_thread")) P.enc_thread = truthy(v);
+     else if (!strcmp(k, "draw_barriers")) P.draw_barriers_game = !strcmp(v, "game") || !strcmp(v, "1");
+@@ -263,9 +276,9 @@ static void read_file(const char *path) {
+ // Environment: DM_PROF_<KEY> with the game.tsv key upper-cased (DM_PROF_MEM_RESERVE=0x140000000).
+ static void read_env(void) {
+     static const char *keys[] = {"TITLE_ID","NAME","ROMFS_MARKER","PROGRAM_ID","MODULES","MEM_RESERVE","MEM_ALIAS","MEM_STACK","APP_POOL",
+-        "MEM_USED","SYS_RESOURCE","MEM_MAP_LIMIT","PRESENT_INTERVAL","CORE_PREEMPT","ALLOC_BIG_ALIGN","FPS_TARGET","FPS_HOLD","PRESENT_SNAP",
++        "MEM_USED","SYS_RESOURCE","MEM_MAP_LIMIT","PRESENT_INTERVAL","CORE_PREEMPT","ALLOC_BIG_ALIGN","FPS_TARGET","FPS_REAL","ROMFS_SUBSTITUTE","FPS_HOLD","PRESENT_SNAP",
+         "PSO_MTL4","SHARED_FONT","PAD_LAYOUT","OP_MODE","PERF_MODE","FEEDBACK_SNAP","TEX_FLUSH_UPLOAD","TEX_DIRTY_UPLOAD",
+-        "TEX_DYN_SLOTS","GPU_TIMESTAMPS","VCONV_RANGE","DEVICE_API","STDALLOC_CAP","SHADER_KEY_SKIP","TEX_BC_CPU","UE_TEXTURE_POOL","ENC_THREAD","DRAW_BARRIERS","GAME_ARGS","GAME_ENV", NULL};
++        "TEX_DYN_SLOTS","GPU_TIMESTAMPS","VCONV_RANGE","DEVICE_API","STDALLOC_CAP","SHADER_KEY_SKIP","TEX_BC_CPU","TEX_BC_MIP_SKIP","UE_TEXTURE_POOL","ENC_THREAD","DRAW_BARRIERS","GAME_ARGS","GAME_ENV", NULL};
+     char k[64], name[96];
+     for (int i = 0; keys[i]; i++) {
+         snprintf(k, sizeof k, "%s", keys[i]);
+@@ -307,6 +320,6 @@ void dm_profile_log(void) {
+     LOG("  graphics flush %d dirty %d dynslots %d gputs %d vconv %d nvn_api %d.%d  versions %d",
+         p->tex_flush_upload, p->tex_dirty_upload, p->tex_dyn_slots, p->gpu_ts_segment, p->vconv_range,
+         p->nvn_api_major, p->nvn_api_minor, p->nver);
+-    LOG("  more stdalloc_cap %#llx key_skip %#x+%#x bc_cpu %d ue_pool %d enc_thread %d draw_barriers_game %d",
+-        (unsigned long long)p->stdalloc_cap, p->shader_skip_off, p->shader_skip_len, p->tex_bc_cpu, p->ue_texture_pool, p->enc_thread, p->draw_barriers_game);
++    LOG("  more stdalloc_cap %#llx key_skip %#x+%#x bc_cpu %d bc_mip_skip %d ue_pool %d enc_thread %d draw_barriers_game %d",
++        (unsigned long long)p->stdalloc_cap, p->shader_skip_off, p->shader_skip_len, p->tex_bc_cpu, p->tex_bc_mip_skip, p->ue_texture_pool, p->enc_thread, p->draw_barriers_game);
+ }
+diff --git a/dm/host/hle_profile.h b/dm/host/hle_profile.h
+index e73d416..eb1daa3 100644
+--- a/dm/host/hle_profile.h
++++ b/dm/host/hle_profile.h
+@@ -25,6 +25,8 @@ struct dm_profile {
+     struct { char build[40], ver[40]; } ver[DM_PROF_MAX_VER];   // display version by main build ID
+     int nver;
+     int present_display, core_preempt, alloc_big_align, fps_target, fps_hold, present_snap, pso_mtl4;
++    int fps_real;
++    char romfs_subst[2048];  // damaged RomFS file substitutions from the active profile
+     int shared_font_ttf;         // -1 = decide by the SDK version (hle_sdk16.c font_skip)
+     int pad_layout, opmode, perf_boost;
+     char feedback_snap[DM_PROF_STR];
+@@ -32,7 +34,7 @@ struct dm_profile {
+     int nvn_api_major, nvn_api_minor;   // major 0 = decide by the SDK version (hle_nvn.c nvn_api)
+     uint64_t stdalloc_cap;       // StandardAllocator's address space (hle_svc.c); 0 = what the alias region has room for
+     uint32_t shader_skip_off, shader_skip_len;   // shader_key_skip <offset>+<length>: control bytes the shader keys hash as zeros (len 0 = none)
+-    int tex_bc_cpu, ue_texture_pool, enc_thread, draw_barriers_game;   // ue_texture_pool in MB (0 = the game's own pool)
++    int tex_bc_cpu, tex_bc_mip_skip, ue_texture_pool, enc_thread, draw_barriers_game;   // ue_texture_pool in MB (0 = the game's own pool)
+     char args[512], genv[1024];  // game_args / game_env
+     char source[512];            // DM_PROFILE, or "compiled defaults"
+ };
+diff --git a/dm/host/tests/t_fs.c b/dm/host/tests/t_fs.c
+index fa67084..2dbac81 100644
+--- a/dm/host/tests/t_fs.c
++++ b/dm/host/tests/t_fs.c
+@@ -365,6 +365,28 @@ int main(void) {
+             free(full);
+         }
+     }
++    printf("RomFS image: a .zs file that is not a zstd stream\n");   // /data/x.zs = a zstd frame's magic, /data/y.zs = zeros (Ocarina of Time's NUP: three textures begin with 12 KB of zeros)
++    {   uint8_t img[32 + 12 + 4 * 24 + 12] = {0}; uint64_t hd[3] = {44, 4 * 24 + 12, 4};
++        img_ent e[4] = {{1, 1, 0, 0, 0, 0}, {2, 2, 0, 4, 0, 0}, {32, 6, 4, 4, 1, 0}, {38, 6, 8, 4, 1, 0}};
++        memcpy(img, "DMROMFS1", 8); memcpy(img + 8, hd, sizeof hd); memcpy(img + 32, "\x28\xb5\x2f\xfd\x01\x02", 6); memcpy(img + 44, e, sizeof e); memcpy(img + 44 + sizeof e, "datax.zsy.zs", 12);
++        char ip[1100]; snprintf(ip, sizeof ip, "%s/zs.img", root); FILE *f = fopen(ip, "wb"); fwrite(img, 1, sizeof img, f); fclose(f);
++        g_nmnt = 0; setenv("DM_ROMFS", ip, 1); unsetenv("DM_ROMFS_OVERLAY"); CHECK(h_fs_MountRom("rom", NULL, 0) == RES_OK, "mount the image");
++        uint64_t h; size_t n = 0; char b[8] = {0}; int32_t t = -1;
++        CHECK(h_fs_OpenFile(&h, "rom:/data/x.zs", MODE_READ) == RES_OK && h_fs_ReadFile(&n, h, 0, b, 6) == RES_OK && n == 6 && !memcmp(b, "\x28\xb5\x2f\xfd", 4), "a zstd stream opens and reads"); h_fs_CloseFile(h);
++        CHECK(h_fs_GetEntryType(&t, "rom:/data/x.zs") == RES_OK && t == ENT_FILE, "and is a file");
++        CHECK(h_fs_GetEntryType(&t, "rom:/data/y.zs") == RES_PATH_NOT_FOUND, "a .zs file of zeros is not found by its entry type");
++        CHECK(h_fs_OpenFile(&h, "rom:/data/y.zs", MODE_READ) == RES_PATH_NOT_FOUND && h_fs_OpenFile(&h, "rom:/data/y.zs", MODE_READ) == RES_PATH_NOT_FOUND, "nor opens, also the second time");
++        CHECK(g_mnt[0].img->e[3].flags == (IMG_ENT_ZCHECKED | IMG_ENT_BADZSTD) && g_mnt[0].img->e[2].flags == IMG_ENT_ZCHECKED, "checked once each, in memory");
++        g_nmnt = 0;
++        // a substitute named for it (the profile's romfs_substitute, here DM_ROMFS_SUBST): served in its place, also when the check ran before (the flags stay)
++        setenv("DM_ROMFS_SUBST", "data/q.zs=data/x.zs data/y.zs=data/x.zs", 1); CHECK(h_fs_MountRom("rom", NULL, 0) == RES_OK, "mount again with a substitute");
++        memset(b, 0, sizeof b); n = 0;
++        CHECK(h_fs_OpenFile(&h, "rom:/data/y.zs", MODE_READ) == RES_OK && h_fs_ReadFile(&n, h, 0, b, 8) == RES_OK && n == 6 && !memcmp(b, "\x28\xb5\x2f\xfd\x01\x02", 6), "the damaged file reads as its substitute"); h_fs_CloseFile(h);
++        CHECK(h_fs_GetEntryType(&t, "rom:/data/y.zs") == RES_OK && t == ENT_FILE, "and is a file");
++        setenv("DM_ROMFS_SUBST", "data/y.zs=data/none.zs", 1);
++        CHECK(h_fs_OpenFile(&h, "rom:/data/y.zs", MODE_READ) == RES_PATH_NOT_FOUND, "a substitute that is not in the image: not found");
++        unsetenv("DM_ROMFS_SUBST"); g_nmnt = 0;
++    }
+     snprintf(save, sizeof save, "%s/save", root); snprintf(work, sizeof work, "%s.work", save);
+     mkdir(save, 0755); snprintf(p, sizeof p, "%s/a", save); put(p, "old");
+     setenv("DM_SAVE", save, 1); setenv("DM_TEST_FS_FAIL", "write:5:28", 1);   // the 5th save write fails, errno 28 = ENOSPC
+diff --git a/dm/host/tests/t_profile_runtime.c b/dm/host/tests/t_profile_runtime.c
+index bbf0e32..92c4abf 100644
+--- a/dm/host/tests/t_profile_runtime.c
++++ b/dm/host/tests/t_profile_runtime.c
+@@ -16,13 +16,14 @@ static int child_file(const char *path) {
+     setenv("DM_PROFILE", path, 1);
+     const struct dm_profile *p = dm_profile();
+     CHECK(p == dm_prof());
++    CHECK(p->fps_real == 1 && !strcmp(p->romfs_subst, "broken.zs=good.zs"));
+     CHECK(!strcmp(p->id, "0100000000001234") && !strcmp(p->name, "Runtime Test"));
+     CHECK(p->program_id == 0x0100000000001234ull);
+     CHECK(p->nmod == 3 && !strcmp(p->modules[0], "main") && !strcmp(p->modules[1], "subsdk0") && !strcmp(p->modules[2], "sdk"));
+     CHECK(!strcmp(p->args, "-foo=1 -bar"));
+     CHECK(p->stdalloc_cap == 0x180000000ull);
+     CHECK(p->shader_skip_off == 0x770 && p->shader_skip_len == 0x78);
+-    CHECK(p->tex_bc_cpu == 1 && p->ue_texture_pool == 1000 && p->enc_thread == 1 && p->draw_barriers_game == 1 && p->core_preempt == 1 && p->fps_target == 30);
++    CHECK(p->tex_bc_mip_skip == 1 && p->tex_bc_cpu == 1 && p->ue_texture_pool == 1000 && p->enc_thread == 1 && p->draw_barriers_game == 1 && p->core_preempt == 1 && p->fps_target == 30);
+     CHECK(p->shared_font_ttf == 1 && p->nvn_api_major == 55 && p->nvn_api_minor == 12);
+     CHECK(p->nver == 1 && !strcmp(p->ver[0].build, "abcd") && !strcmp(p->ver[0].ver, "2.0.1"));
+     return 0;
+@@ -31,15 +32,16 @@ static int child_file(const char *path) {
+ static int child_none(const char *path) {
+     setenv("DM_PROFILE", path, 1);
+     const struct dm_profile *p = dm_profile();
++    CHECK(p->fps_real == 0 && !p->romfs_subst[0]);
+     CHECK(p->shader_skip_len == 0 && p->shared_font_ttf == -1 && p->nvn_api_major == 0 && p->stdalloc_cap == 0);
+-    CHECK(p->tex_bc_cpu == 0 && p->ue_texture_pool == 0 && p->enc_thread == 0 && p->draw_barriers_game == 0);
++    CHECK(p->tex_bc_mip_skip == 0 && p->tex_bc_cpu == 0 && p->ue_texture_pool == 0 && p->enc_thread == 0 && p->draw_barriers_game == 0);
+     return 0;
+ }
+ static int child_env(void) {   // DM_PROF_<KEY> wins over the file and over the compiled profile
+     unsetenv("DM_PROFILE");
+-    setenv("DM_PROF_STDALLOC_CAP", "0x40000000", 1); setenv("DM_PROF_SHADER_KEY_SKIP", "0x30+0x10", 1); setenv("DM_PROF_ENC_THREAD", "1", 1);
++    setenv("DM_PROF_STDALLOC_CAP", "0x40000000", 1); setenv("DM_PROF_SHADER_KEY_SKIP", "0x30+0x10", 1); setenv("DM_PROF_ENC_THREAD", "1", 1); setenv("DM_PROF_TEX_BC_MIP_SKIP", "0", 1);
+     const struct dm_profile *p = dm_profile();
+-    CHECK(p->stdalloc_cap == 0x40000000ull && p->shader_skip_off == 0x30 && p->shader_skip_len == 0x10 && p->enc_thread == 1);
++    CHECK(p->stdalloc_cap == 0x40000000ull && p->shader_skip_off == 0x30 && p->shader_skip_len == 0x10 && p->enc_thread == 1 && p->tex_bc_mip_skip == 0);
+     return 0;
+ }
+ static int child_compiled(void) {   // no DM_PROFILE: exactly the header
+@@ -52,7 +54,8 @@ static int child_compiled(void) {   // no DM_PROFILE: exactly the header
+     CHECK(!strcmp(p->args, DM_GAME_ARGS));
+     CHECK(p->stdalloc_cap == DM_GAME_STDALLOC_CAP);
+     CHECK(p->shader_skip_off == DM_GAME_SHADER_KEY_SKIP_OFF && p->shader_skip_len == DM_GAME_SHADER_KEY_SKIP_LEN);
+-    CHECK(p->tex_bc_cpu == DM_GAME_TEX_BC_CPU && p->ue_texture_pool == DM_GAME_UE_TEXTURE_POOL && p->enc_thread == DM_GAME_ENC_THREAD && p->draw_barriers_game == DM_GAME_DRAW_BARRIERS_GAME);
++    CHECK(p->tex_bc_mip_skip == DM_GAME_TEX_BC_MIP_SKIP && p->tex_bc_cpu == DM_GAME_TEX_BC_CPU && p->ue_texture_pool == DM_GAME_UE_TEXTURE_POOL && p->enc_thread == DM_GAME_ENC_THREAD && p->draw_barriers_game == DM_GAME_DRAW_BARRIERS_GAME);
++    CHECK(p->fps_real == DM_GAME_FPS_REAL && !strcmp(p->romfs_subst, DM_GAME_ROMFS_SUBST));
+     CHECK(p->core_preempt == DM_GAME_CORE_PREEMPT && p->fps_target == DM_GAME_FPS_TARGET);
+ #ifdef DM_GAME_NVN_API_MAJOR
+     CHECK(p->nvn_api_major == DM_GAME_NVN_API_MAJOR && p->nvn_api_minor == DM_GAME_NVN_API_MINOR);
+@@ -83,9 +86,9 @@ int main(int argc, char **argv) {
+     char full[300], none[300]; snprintf(full, sizeof full, "%s/full.tsv", dir); snprintf(none, sizeof none, "%s/none.tsv", dir);
+     if (write_file(full, "# values that differ from any compiled profile\n"
+             "title_id\t0100000000001234\nprogram_id\t0x0100000000001234\nname\tRuntime Test\nmodules\tmain subsdk0 sdk\ngame_args\t-foo=1 -bar\n"
+-            "stdalloc_cap\t0x180000000\nshader_key_skip\t0x770+0x78\ntex_bc_cpu\t1\nue_texture_pool\t1000\nenc_thread\t1\ndraw_barriers\tgame\ncore_preempt\t1\nfps_target\t30\n"
++            "fps_real\t1\nromfs_substitute\tbroken.zs=good.zs\nstdalloc_cap\t0x180000000\nshader_key_skip\t0x770+0x78\ntex_bc_cpu\t1\ntex_bc_mip_skip\t1\nue_texture_pool\t1000\nenc_thread\t1\ndraw_barriers\tgame\ncore_preempt\t1\nfps_target\t30\n"
+             "shared_font\tttf\ndevice_api\t55.12\nbuild\tabcd\t2.0.1\tdisplay\n")) return 1;
+-    if (write_file(none, "shader_key_skip\t0x0+0x0\nshared_font\tauto\ndevice_api\t0.0\nstdalloc_cap\t0x0\ntex_bc_cpu\t0\nue_texture_pool\t0\nenc_thread\t0\ndraw_barriers\t0\n")) return 1;
++    if (write_file(none, "fps_real\t0\nromfs_substitute\t\nshader_key_skip\t0x0+0x0\nshared_font\tauto\ndevice_api\t0.0\nstdalloc_cap\t0x0\ntex_bc_cpu\t0\ntex_bc_mip_skip\t0\nue_texture_pool\t0\nenc_thread\t0\ndraw_barriers\t0\n")) return 1;
+     const char *cases[][2] = {{"file", full}, {"none", none}, {"env", NULL}, {"compiled", NULL}};
+     int bad = 0;
+     for (int i = 0; i < 4; i++) {
+diff --git a/dm/ios/Sources/main.m b/dm/ios/Sources/main.m
+index dd0b997..1af67b3 100644
+--- a/dm/ios/Sources/main.m
++++ b/dm/ios/Sources/main.m
+@@ -357,6 +357,10 @@ static int boot_env(void) {
+     NSString *control = [dmdir stringByAppendingPathComponent:@"control.nacp"];   // the game's control data (build_ipa.sh program_tables; hle_fs.c control_read)
+     if ([fm fileExistsAtPath:control]) setenv("DM_CONTROL_NACP", control.fileSystemRepresentation, 0);
+     g_prog = prog; *msl_out = msl;   // boot_env locates the game data (romfs_locate(g_prog)), so a game with none yet still reaches the launcher (per-game data folders)
++    {   // game file replacements packed beside the RomFS (build_ipa.sh: a romfs_overlay folder beside the game's RomFS image), served over it (hle_fs.c DM_ROMFS_OVERLAY)
++        NSString *ov = [res stringByAppendingPathComponent:prog ? [prog stringByAppendingPathComponent:@"romfs_overlay"] : @"romfs_overlay"]; BOOL dir = NO;
++        if ([fm fileExistsAtPath:ov isDirectory:&dir] && dir) { setenv("DM_ROMFS_OVERLAY", ov.fileSystemRepresentation, 0); fprintf(stderr, "boot: game file replacements %s\n", getenv("DM_ROMFS_OVERLAY")); }
++    }
+     return dmdir;
+ }
+ static int g_boot_ok;
+diff --git a/dm/ios/Sources/player_env.h b/dm/ios/Sources/player_env.h
+index 129ce47..f64d080 100644
+--- a/dm/ios/Sources/player_env.h
++++ b/dm/ios/Sources/player_env.h
+@@ -7,6 +7,7 @@ static inline int dm_player_diagnostic_key(const char *key) {
+     // Encoding placement and shader prefetch are launcher settings, not diagnostics or launcher state.
+     if(!strcmp(key,"DM_NVN_ENC_THREAD"))return 0;
+     if(!strcmp(key,"DM_NVN_PREFETCH"))return 0;
++    if(!strcmp(key,"DM_NVN_BC_MIP_SKIP")||!strcmp(key,"DM_NVN_BC_MIP_MIN_WIDTH")||!strcmp(key,"DM_NVN_BC_MIP_MIN_HEIGHT"))return 0;
+     static const char *const prefixes[]={"DM_NVN_","DM_TEST_","MTL_DEBUG_","MTL_SHADER_VALIDATION"};
+     for(unsigned i=0;i<sizeof prefixes/sizeof *prefixes;i++)
+         if(!strncmp(key,prefixes[i],strlen(prefixes[i])))return 1;
+diff --git a/dm/ios/tools/build_ipa.sh b/dm/ios/tools/build_ipa.sh
+index 437d461..cdd3cf8 100755
+--- a/dm/ios/tools/build_ipa.sh
++++ b/dm/ios/tools/build_ipa.sh
+@@ -481,7 +481,7 @@ if [ -n "${DM_ENTITLEMENTS-default}" ]; then
+   t "entitlements in the executable's ad-hoc signature (the install tool re-signs and keeps them)"
+ fi
+ P=Payload/DmIOS.app
+-SKIP=(--skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs --skip $P/romfs.img --skip $P/romfs.id --skip $P/html --skip $P/jit)
++SKIP=(--skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs --skip $P/romfs.img --skip $P/romfs.id --skip $P/html --skip $P/jit --skip $P/romfs_overlay)
+ if [ -n "${PROGRAMS_TSV:-}" ]; then   # each program's shader libraries, RomFS, offline HTML pages and nn::jit image under its own folder
+   [ "${DM_COPY_ROMFS:-YES}" != NO ] || die "DM_COPY_ROMFS=NO: a game of several programs keeps its programs' files in the app"
+   MAPS=("$P=$APP")
+@@ -526,6 +526,7 @@ if [ -n "${PSO:-}" ]; then MAPS+=("$P/pso=$PSO"); fi
+ MAPS+=("$P/msl/$MSLDIR=$MSL_IOS/$MSLDIR" "$P=$APP")
+   if [ -d "$(dirname "$ROMFS")/html" ]; then MAPS+=("$P/html=$(dirname "$ROMFS")/html"); t "offline HTML pages: $(dirname "$ROMFS")/html"; fi   # beside its RomFS, where the host finds them (hle_web.c)
+   if [ -d "$(dirname "$ROMFS")/jit" ]; then MAPS+=("$P/jit=$(dirname "$ROMFS")/jit"); t "nn::jit image: $(dirname "$ROMFS")/jit"; fi
++  if [ -d "$(dirname "$ROMFS")/romfs_overlay" ]; then MAPS+=("$P/romfs_overlay=$(dirname "$ROMFS")/romfs_overlay"); t "game file replacements: $(dirname "$ROMFS")/romfs_overlay"; fi   # served over the RomFS (main.m sets DM_ROMFS_OVERLAY, hle_fs.c)
+ fi
+ t "pack IPA (already-compressed game files stored, everything else deflated)"
+ # The device can enable Metal 4/prebuild at run time even when the profile defaults it off. Without an offline archive, its prebuild needs these pulling vertex libraries just as the hybrid pipelines do.
+diff --git a/dm/ios/tools/stage_resources.sh b/dm/ios/tools/stage_resources.sh
+index 13a9224..e5baab2 100644
+--- a/dm/ios/tools/stage_resources.sh
++++ b/dm/ios/tools/stage_resources.sh
+@@ -23,7 +23,7 @@ check_program() {   # RomFS, marker, shader libraries, shader folder
+ }
+ # The folders beside a RomFS (nx_extract --html, the NSP script's nn::jit image) into the app folder given, where the host finds them beside its RomFS (hle_web.c, loader.c dm_jit_serve_dir)
+ beside_romfs() {
+-    for d in html jit; do
++    for d in html jit romfs_overlay; do
+         if [ -d "$(dirname "$1")/$d" ]; then mkdir -p "$2/$d"; /usr/bin/rsync -a --delete -- "$(dirname "$1")/$d/" "$2/$d/"; else rm -rf "${2:?}/$d"; fi
+     done
+ }
+diff --git a/dm/mac/launcher.c b/dm/mac/launcher.c
+index 8876aad..a791ea7 100644
+--- a/dm/mac/launcher.c
++++ b/dm/mac/launcher.c
+@@ -1,7 +1,7 @@
+ // Mac app launcher (CFBundleExecutable of the .app that dm/mac/pack_app.py packs): sets the host's environment from the bundle, then runs the Mac host (Contents/MacOS/dmhost) as a child.
+ // The host is not exec'ed: macOS privacy checks (TCC) attribute a child's file access to the app that launched it, while a launcher that hands its process over (a shell script exec'ing
+ // dmhost) gets EPERM on every open on a removable volume, with no prompt, signed or not. The launcher forwards SIGTERM / SIGINT / SIGHUP to the host and returns its exit code.
+-// Bundle layout: Resources/romfs.img (the game's RomFS image; legacy romfs/ also supported), Resources/msl/<b-chain.img | vk | gl> (the Mac shader libraries), Resources/aoc/<index> (DLC), Resources/pso (the pipeline archive made
++// Bundle layout: Resources/romfs.img (the game's RomFS image; legacy romfs/ also supported), Resources/msl/<b-chain.img | vk | gl> (the Mac shader libraries), Resources/aoc/<index> (DLC), Resources/romfs_overlay (game file replacements), Resources/pso (the pipeline archive made
+ // offline, handed to the host as DM_PSO_BUNDLE as the iOS app's main.m does), Resources/dm (the rewritten modules, the shader tables and pairs, font/, env.txt); romfs.img, msl, aoc and pso are links into the signed data bundles in Contents/PlugIns (pack_app.py). Saves, the pipeline list and temporary files go to ~/Library/Application Support/nxnative/<title ID>/, the host's output to ~/Library/Logs/nxnative/<title ID>.log
+ // (the previous run's kept as <title ID>.prev.log). Environment switches: one KEY=VALUE per line in <Application Support folder>/env.txt, then Resources/dm/env.txt (the first one wins; neither
+ // replaces a variable already set), as the iOS app reads Documents/env.txt and dm/env.txt. Then the player's saved choices: launcher.<VAR> strings in the app's preferences domain (its bundle ID), which a
+@@ -363,6 +363,7 @@ int main(int argc, char **argv) {
+     snprintf(p, sizeof p, "%s/shader_map.tsv", dm); if (!stat(p, &st)) setenv("DM_NVN_SHMAP", p, 0);
+     snprintf(p, sizeof p, "%s/aoc", res); if (!stat(p, &st)) setenv("DM_AOC_DIR", p, 0);
+     snprintf(p, sizeof p, "%s/pso", res); if (!stat(p, &st)) setenv("DM_PSO_BUNDLE", p, 0);   // the bases of every shader pair: the first start builds none
++    snprintf(p, sizeof p, "%s/romfs_overlay", res); if (!stat(p, &st) && S_ISDIR(st.st_mode)) setenv("DM_ROMFS_OVERLAY", p, 0);   // game file replacements served over the RomFS (pack_app.py --romfs-overlay; hle_fs.c)
+     if (*lang) setenv("DM_LANG", lang, 0);
+     setenv("DM_WINDOW", "1", 0); setenv("DM_AUDIO", "1", 0);
+     programs_table(contents, res, sup);
+diff --git a/dm/mac/pack_app.py b/dm/mac/pack_app.py
+index 1ff5bd7..77396b7 100755
+--- a/dm/mac/pack_app.py
++++ b/dm/mac/pack_app.py
+@@ -348,7 +348,7 @@ def pack(a):
+         sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/input_map.h', HERE.parent / 'host/dm_input.h', HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_sync.h', HERE.parent / 'tools/romfs.py', HERE.parent / 'tools/nacp.py'] + swift_sources()
+         large = {*msls, *pso, *(p for x in programs for p in x[5])}   # the shader libraries and pipeline archives (13.5 GB for Ocarina of Time): by stat, as the RomFS trees below
+         inputs = {'options': vars(a), 'files': [file_row(p, p in large) for p in files + sources],
+-                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.romfs and f'{a.romfs}.id', a.aoc, a.html, *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
++                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.romfs and f'{a.romfs}.id', a.aoc, a.html, a.romfs_overlay, *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
+                   'tools': [[str(c), c.stat().st_mode, c.stat().st_size, c.stat().st_mtime_ns, c.stat().st_ctime_ns, run([c, '--version']).strip()] for c in (clang, swiftc)] + [
+                             str(sdk), run(['xcrun', '--sdk', 'macosx', '--show-sdk-version']).strip(),
+                             str(codesign), codesign.stat().st_mode, digest(codesign), minos]}
+@@ -408,6 +408,7 @@ def pack(a):
+     image_id = Path(f'{romfs}.id')   # the image's identity (build_ipa_from_nsp.py write_image_id): an iPhone build of this game reuses the image from the app instead of extracting it again (LNPANDY/NX2Apple#708)
+     if romfs.is_file() and image_id.is_file(): shutil.copyfile(image_id, res / 'romfs.img.id')
+     if a.html and Path(a.html).is_dir(): copy([Path(a.html)], res / 'html', False)   # the offline pages, beside the RomFS where the host looks for them (hle_web.c)
++    if a.romfs_overlay: step('game file replacements'); copy([Path(a.romfs_overlay)], res / 'romfs_overlay', False)   # served over the RomFS (launcher.c DM_ROMFS_OVERLAY)
+     # The other programs: p<N>/ (RomFS in the data bundle GameData<N>, offline pages), msl/p<N>/<library> (in ShaderLibraries), dm/p<N>/ (modules, tables), and the table of them all, which the
+     # launcher makes DM_PROGRAMS (launcher.c, hle_oe.c): @R@ Resources, @C@ Contents, @S@ the app's Application Support folder
+     if programs:
+@@ -459,6 +460,7 @@ def parse(argv):
+     ap.add_argument('--aoc', help='the DLC RomFS images or folders by index')
+     ap.add_argument('--pso', help='the pipeline archive made offline for this Mac (pso_offline.py --platform macos output: <arch>.mtl4a, prebuilt.tsv)')
+     ap.add_argument('--pso-pairs', help='pso_pairs.tsv for a profile that has none (the shader split\'s copy)')
++    ap.add_argument('--romfs-overlay', help='game file replacements served over the RomFS (Resources/romfs_overlay, which the launcher makes DM_ROMFS_OVERLAY)')
+     ap.add_argument('--html', help='the offline HTML pages (nx_extract --html), which go beside the RomFS')
+     ap.add_argument('--program', action='append', help='another program of a game of several programs: index, rewritten modules, RomFS, Mac shader libraries, tables, offline pages (tab-separated)')
+     ap.add_argument('--control-nacp', help='the game\'s control data (control.nacp; Resources/control.nacp, beside the RomFS, where the host reads it: fs::GetCacheStorageMax)')
+diff --git a/dm/tools/nso_asm.py b/dm/tools/nso_asm.py
+index 23e6f45..0a3e6ad 100644
+--- a/dm/tools/nso_asm.py
++++ b/dm/tools/nso_asm.py
+@@ -28,6 +28,8 @@ def CMPR(n, m): return 0xEB00001F | (m << 16) | (n << 5)   # cmp xn, xm (subs xz
+ def BEQ(frm, to):
+     off = to - frm; assert -(1 << 20) <= off < (1 << 20) and off % 4 == 0
+     return 0x54000000 | (((off >> 2) & 0x7FFFF) << 5)
++def CBZW(rt, frm, to): return 0x34000000 | ((((to - frm) >> 2) & 0x7FFFF) << 5) | rt   # cbz wt,<to>
++def CBNZW(rt, frm, to): return 0x35000000 | ((((to - frm) >> 2) & 0x7FFFF) << 5) | rt   # cbnz wt,<to>
+ def BRK(imm): return 0xD4200000 | ((imm & 0xFFFF) << 5)
+ def BLR(n): return 0xD63F0000 | (n << 5)
+ NOP = 0xD503201F
+diff --git a/dm/tools/patch_nso.py b/dm/tools/patch_nso.py
+index 683d7a2..d1e0bdc 100644
+--- a/dm/tools/patch_nso.py
++++ b/dm/tools/patch_nso.py
+@@ -1805,7 +1805,9 @@ obs += region_obs
+ # State page = the page after the key page (zero in the file, read-write in both loaders): +0 float target fps written by the loader (fps_target, DM_FPS_TARGET; 0 = every stub
+ # runs the original instructions), +4 30 fps movie/cinematic flag, +8 double lead (TOTK), +0x10 float render scale (TOTK, BotW), +0x18 double game seconds (TOTK),
+ # +0x20 u32 step in vsyncs (host; 0 = not decided yet), +0x24 u32 a step the game fixes itself (BotW's VFR override; 0 = none), +0x28 u32 AoC's vsyncs per update, marked by
+-# its first stub (0 = off), +0x30 u64 vsyncs stepped (the stubs; logged by the host to check the game's speed), +0x40 u32 1 = the game's own dynamic resolution runs, 0 = its
++# its first stub (0 = off), +0x2c u32 the whole frame rate the host measured from its presents while no target is set (hle_nvn.c freal_tick, profile fps_real; 0 = none:
++# Ocarina of Time's frame-ratio stub then runs the game's division), +0x30 u64 vsyncs stepped (the stubs; logged by the host to check the game's speed), +0x38 u64 game time
++# stepped from the measured rate in 1/60000 s (the same stub; the host's "real speed" line), +0x40 u32 1 = the game's own dynamic resolution runs, 0 = its
+ # stub holds full resolution (DM_DYNAMIC_RESOLUTION, written by the loader; the stub declares the DYNAMIC_RESOLUTION capability). Stub bodies assembled with clang
+ # A build's stubs are FRAME_STEP[build ID](ctx) in its patches.py: ctx.here() / ctx.emit(word) assemble into the patch area, ctx.site(offset, original bytes) asserts a site and that it is
+ # no rewrite site, ctx.put(offset, words, reason) writes it (listed with the cuts), ctx.state is the state page's offset, ctx.render_scale = n marks a render-scale stub that takes scales up to n (1: it only lowers the game's size),
+diff --git a/dm/tools/tests/test_game_profile_runtime.py b/dm/tools/tests/test_game_profile_runtime.py
+index a724f94..77b8693 100644
+--- a/dm/tools/tests/test_game_profile_runtime.py
++++ b/dm/tools/tests/test_game_profile_runtime.py
+@@ -10,7 +10,7 @@ REPO = Path(__file__).resolve().parents[3]
+ sys.path.insert(0, str(REPO / 'dm/games'))
+ import game  # pyright: ignore[reportMissingImports]  (dm/games, put on sys.path above)
+ 
+-KEYS = ('title_id', 'program_id', 'modules', 'stdalloc_cap', 'shader_key_skip', 'tex_bc_cpu', 'ue_texture_pool', 'enc_thread', 'draw_barriers', 'core_preempt', 'fps_target', 'device_api', 'game_args')
++KEYS = ('title_id', 'program_id', 'modules', 'stdalloc_cap', 'shader_key_skip', 'tex_bc_cpu', 'tex_bc_mip_skip', 'fps_real', 'romfs_substitute', 'ue_texture_pool', 'enc_thread', 'draw_barriers', 'core_preempt', 'fps_target', 'device_api', 'game_args')
+ 
+ 
+ def profile(gid):
+@@ -45,6 +45,9 @@ class GameProfileTest(unittest.TestCase):
+             self.assertEqual(int(rows['stdalloc_cap'], 0), int(g.get('stdalloc_cap', '0'), 0), g.id)
+             self.assertEqual(int(rows['ue_texture_pool']), int(g.get('ue_texture_pool', '0')), g.id)
+             self.assertEqual(int(rows['tex_bc_cpu']), int(g.get('tex_bc_cpu', 'off') == 'on'), g.id)
++            self.assertEqual(int(rows['tex_bc_mip_skip']), int(g.get('tex_bc_mip_skip', 'off') == 'on'), g.id)
++            self.assertEqual(int(rows['fps_real']), int(g.get('fps_real', 'off') == 'on'), g.id)
++            self.assertEqual(rows['romfs_substitute'], ' '.join(g.get('romfs_substitute', '').split()), g.id)
+             self.assertEqual(int(rows['enc_thread']), int(g.get('enc_thread', 'off') == 'on'), g.id)
+             self.assertEqual(int(rows['draw_barriers']), int(g.get('draw_barriers', 'full') == 'game'), g.id)
+             self.assertEqual(rows['device_api'] == '0.0', not g.get('device_api', ''), g.id)
+diff --git a/dm/tools/tests/test_oot_frame_step.py b/dm/tools/tests/test_oot_frame_step.py
+new file mode 100644
+index 0000000..0cd379b
+--- /dev/null
++++ b/dm/tools/tests/test_oot_frame_step.py
+@@ -0,0 +1,91 @@
++"""Execute Ocarina of Time's emitted frame-ratio stub (patches.py frame_step) without game files: the host's step with a target, the measured frame rate without one (fps_real)."""
++
++from importlib import import_module
++import importlib.util
++from pathlib import Path
++import struct
++import sys
++import unittest
++
++TOOLS = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(TOOLS))
++
++PROFILE = TOOLS.parent / "games/0400486024DEC000/patches.py"
++SPEC = importlib.util.spec_from_file_location("oot_patches", PROFILE)
++assert SPEC is not None and SPEC.loader is not None
++PATCH = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(PATCH)
++
++
++class FrameRatio(unittest.TestCase):
++    mem, func, stub, state, stack = 0x10000000, 0x6e6be0, 0x5100190, 0x4ea4000, 0x18001000
++
++    def setUp(self):
++        try:
++            uc = import_module("unicorn")
++            self.arm = import_module("unicorn.arm64_const")
++        except ImportError:
++            self.skipTest("optional ARM64 execution dependency: unicorn")
++        self.cpu = uc.Uc(uc.UC_ARCH_ARM64, uc.UC_MODE_ARM)
++        for address in (self.mem + (self.func & ~0xfff), self.mem + (self.stub & ~0xfff), self.mem + self.state, self.stack):
++            self.cpu.mem_map(address, 4096)
++        self.cursor, self.sites, self.cuts = self.stub, [], []
++        self.base, self.others, self.capabilities = self.func, {}, set()   # no dynamic resolution site: that stub is not emitted
++        PATCH.frame_step(self)
++        self.site_at = self.func + 0xe4
++        self.assertIn((self.site_at, "2818201e"), self.sites)
++        self.assertIn(self.site_at, self.cuts)
++        self.end = self.mem + self.site_at + 4
++        self.cpu.hook_add(uc.UC_HOOK_CODE, lambda cpu, *_: cpu.emu_stop(), begin=self.end, end=self.end)
++
++    def here(self): return self.cursor
++    def site(self, offset, original): self.sites.append((offset, original))
++    def emit(self, word):
++        self.cpu.mem_write(self.mem + self.cursor, struct.pack("<I", word)); self.cursor += 4
++    def put(self, offset, words, _reason):
++        self.cuts.append(offset); self.cpu.mem_write(self.mem + offset, struct.pack("<" + "I" * len(words), *words))
++    def u64(self, off): return struct.unpack("<Q", self.cpu.mem_read(self.mem + self.state + off, 8))[0]
++
++    def ratio(self, target, step, game_fps=60, measured=0, base=60.0):
++        arm = self.arm
++        self.cpu.mem_write(self.mem + self.state, struct.pack("<f", target))
++        self.cpu.mem_write(self.mem + self.state + 0x20, struct.pack("<I", step))
++        self.cpu.mem_write(self.mem + self.state + 0x2c, struct.pack("<I", measured))
++        kept = {arm.UC_ARM64_REG_X8: 0x123456789, arm.UC_ARM64_REG_X15: 0x987654321, arm.UC_ARM64_REG_X21: 0x5555, arm.UC_ARM64_REG_SP: self.stack + 0x800,
++                arm.UC_ARM64_REG_NZCV: 0xa0000000}
++        for r, v in kept.items(): self.cpu.reg_write(r, v)
++        self.cpu.reg_write(arm.UC_ARM64_REG_S0, struct.unpack("<I", struct.pack("<f", float(game_fps)))[0])   # the game's scvtf of [x21+0x2c8]
++        self.cpu.reg_write(arm.UC_ARM64_REG_S1, struct.unpack("<I", struct.pack("<f", base))[0])
++        self.cpu.emu_start(self.mem + self.site_at, self.end, count=64)
++        self.assertEqual(self.cpu.reg_read(arm.UC_ARM64_REG_PC), self.end)
++        for r, v in kept.items(): self.assertEqual(self.cpu.reg_read(r), v)
++        return round(struct.unpack("<f", struct.pack("<I", self.cpu.reg_read(arm.UC_ARM64_REG_S8) & 0xffffffff))[0], 4)
++
++    def test_target_follows_the_host_step(self):
++        self.assertEqual(self.ratio(60, 1), 1.0)
++        self.assertEqual(self.ratio(60, 2), 2.0)
++        self.assertEqual(self.ratio(60, 2, base=30.0), 1.0)
++        self.assertEqual(self.u64(0x30), 5)   # 1 + 2 + 2 vsyncs stepped
++        self.assertEqual(self.u64(0x38), 0)
++
++    def test_target_before_a_step_runs_the_division(self):
++        self.assertEqual(self.ratio(60, 0, game_fps=30), 2.0)
++        self.assertEqual(self.u64(0x30), 0)
++
++    def test_target_zero_divides_by_the_measured_frame_rate(self):
++        self.assertEqual(self.ratio(0, 2, measured=45), round(60 / 45, 4))   # a step left in +0x20 does not matter without a target
++        self.assertEqual(self.u64(0x38), 1333)
++        self.assertEqual(self.ratio(0, 0, measured=30), 2.0)
++        self.assertEqual(self.u64(0x38), 1333 + 2000)
++        self.assertEqual(self.ratio(0, 0, measured=60, base=30.0), 0.5)
++        self.assertEqual(self.u64(0x38), 1333 + 2000 + 1000)
++        self.assertEqual(self.u64(0x30), 0)
++
++    def test_target_zero_without_a_measurement_keeps_the_division(self):
++        self.assertEqual(self.ratio(0, 1, game_fps=60, measured=0), 1.0)
++        self.assertEqual(self.ratio(0, 1, game_fps=20, measured=0), 3.0)
++        self.assertEqual(self.u64(0x38), 0)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/dm/tools/tests/test_settings.py b/dm/tools/tests/test_settings.py
+index 2f30d7d..02bd502 100644
+--- a/dm/tools/tests/test_settings.py
++++ b/dm/tools/tests/test_settings.py
+@@ -39,4 +39,24 @@ class UpscalerSetting(unittest.TestCase):
+                 self.assertEqual(bool(up),shown,gid)
+                 if up:self.assertEqual((up[0]['default'],up[0]['options']),('game',[['game',"Game's own"],['metalfx','MetalFX']]))
+ 
++class BCMipSetting(unittest.TestCase):
++    def test_ocarina_platform_defaults_and_independent_thresholds(self):
++        with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
++            for platform in ('ios','mac'):
++                with patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':platform}):
++                    rows={s['env']:s for s in settings.build('0400486024DEC000',tmp,'unused')['settings']}
++                self.assertNotIn('DM_UPSCALER',rows, 'Ocarina keeps its native NDSR')
++                self.assertEqual(rows['DM_FPS_TARGET']['options'][0],["0","Game's own"])
++                self.assertEqual(rows['DM_FPS_REAL']['default'],'1')
++                toggle=rows['DM_NVN_BC_MIP_SKIP']
++                self.assertEqual(toggle['kind'],'toggle')
++                self.assertEqual(toggle['default'],'1' if platform=='ios' else '0')
++                for axis in ('WIDTH','HEIGHT'):
++                    row=rows['DM_NVN_BC_MIP_MIN_'+axis]
++                    self.assertEqual(row['default'],'512')
++                    self.assertEqual(row['needs'],'DM_NVN_BC_MIP_SKIP=1')
++                    self.assertEqual([o[0] for o in row['options']],['128','256','512','1024','2048','4096','8192','16384'])
++            for gid in ('010015100B514000','040074A01BF12000'):
++                self.assertFalse(any(s['env'].startswith('DM_NVN_BC_MIP_') for s in settings.build(gid,tmp,'unused')['settings']))
++
+ if __name__=='__main__':unittest.main()
+diff --git a/docs/reference/frame-rate.md b/docs/reference/frame-rate.md
+index 1ca7e34..5ae8b3d 100644
+--- a/docs/reference/frame-rate.md
++++ b/docs/reference/frame-rate.md
+@@ -203,6 +203,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
+ - **Fix:** `guest_ticks` (`hle_os.c`) gives the counter on the guest clock at the rate of the game's SDK: 32 ns a tick when the `sdk` module names its spec `Ounce` (`dm_sdk_ounce`), 19.2 MHz otherwise. Both the `cntpct` gate (`hle.c`) and `svc GetSystemTick` (`hle_svc.c`) read it. NVN's 614.4 MHz report timestamps ([Raw NVN timestamp units](#raw-nvn-timestamp-units)) are unchanged.
+ - **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md): its controller (`main+0x204c20`, called from `main+0x204a64` and `main+0x203718`) measures `ConvertToTick(nvnDeviceGetTimestampInNanoseconds(report))` minus a tick stamp taken at the frame's start (`main+0x204618`); a probe read 0x11d69767da4 against 0xaf5b673f04, a ratio of 1.6276 = 31.25 / 19.2. It set interval 3 and ran at 20 fps (50 ms frames); with the fix its first level runs at 60 fps (frame time p50 16.7 ms over 200 s, interval 1, raised only for a moment at loading hitches).
+ 
++### Real speed without a frame rate target
++
++- **Symptom:** with the launcher's **Frame rate** at the game's own (`DM_FPS_TARGET=0`) a game runs in slow motion below 60 fps. The Legend of Zelda: Ocarina of Time (Switch 2) at about 44 updates a second advanced its time manager 16.667 ms per update: 3.000 s of game time in 4.093 s of wall time. A frame rate target (`DM_FPS_TARGET=60`, the frame step) gives real time, but a late frame then steps two vsyncs, which judders on a device that holds 44-49 fps (iPad Pro M5, docked), where the game's own pacing is the smoothest.
++- **Cause:** the game's update converts the framework's integer FPS into its step, and its frame-rate controller leaves that FPS at 60 whatever the frames take (it never picks interval 2 on its own). The frame-ratio stub at the division (`main+0x6e6cc4`, `MATCH_FRAME_STEP`) gives the ratio the host's whole-vsync step only while a target is set and runs the game's division at target 0, so nothing told the game how long its frames really took.
++- **Fix:** profile key `fps_real on` (Ocarina of Time; `DM_FPS_REAL=1` / `0` overrides it). With no target, `freal_tick` (`hle_nvn.c`) measures the time between its presents, takes the mean of the last 8 (`nvn_freal_fps`, `nvn_fstep.h`: a game that presents on the display link's ticks jitters 1, 2, 1, 2 vsyncs at 45 fps, and the mean is what it steps evenly), clamps it to 1-4 vsyncs and writes the whole frame rate that matches (15..60) into the frame-step state page's +0x2c once per present. The frame-ratio stub (`patches.py` `frame_step`) divides the base rate by that FPS in place of the game's 60 and adds each step at +0x38 (units of 1/60000 s), which the host reads for its `real speed: game time … s in … s (… of real time)` line every 1,800 presents. Nothing is held and nothing is paced: the frames come as they come, and the game's clock follows them. A sample above 4 vsyncs (a load, a stall) enters the mean as 4, so a stall is not replayed; a short sample is not clamped, since frames that jitter 0.9 / 1.1 around a steady 60 average 1.0, and clamping them below one vsync would read 57 fps and run the game fast. The pieces degrade on their own: a main rewritten before the stub's target-0 path leaves +0x38 at 0 (the line says so), and a host without `fps_real` leaves +0x2c at 0, where the stub runs the game's division.
++- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md#frame-rate).
++- **Check:** `dm/tools/tests/test_oot_frame_step.py` (unicorn: a measured 45 fps at +0x2c gives the ratio 60 / 45 and 60000 / 45 at +0x38, no measurement runs the division, a target ignores +0x2c); `make -C dm/gfx/tests GAME=0400486024DEC000 check_t_fstep` (`nvn_freal_fps`: steady, jittered, alternating 1 / 2 vsyncs, a stall in and out of the mean); on the Mac (measured with the earlier form of the stub, at the framework FPS load that feeds the same division), the game slowed with `DM_TEST_PRESENT_LAG=2,20` (20 ms more on every second present) and a probe on the time manager (`DM_PROBE=main:3b4e300@x0+10`, each call's ratio and wall time): with it on, the host's line read 1.000, 0.980, 0.995 and 0.960 of real time over four windows of 1,800 presents (present interval mean 1.26 to 1.89 vsyncs, fps fed 17 to 60), and the probe summed 92.17 s of game time in 95.83 s of wall time (0.962) over 18 to 46 updates a second, 0.999 in its steady 45 fps stretch, against 0.511 had the game kept 1/60 s per update (the dip is a stretch at 18 fps, where frames above 4 vsyncs enter the mean as 4); with `DM_FPS_REAL=0` under the same load, 1,698 updates of ratio 1.0 in 37.78 s: 0.749 of real time at 45 updates a second. Run notes: `ZEL_build/agents/speed.md`.
++
+ ## Engine frame limiters
+ 
+ ### Unity's integer target frame rate
+diff --git a/docs/reference/rendering.md b/docs/reference/rendering.md
+index 93247c5..63c49e6 100644
+--- a/docs/reference/rendering.md
++++ b/docs/reference/rendering.md
+@@ -2091,3 +2091,11 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
+ - **Checked:** `make -C dm/gfx/tests GAME=010015100B514000 check_t_bc_cpu` forces the decoded path on a Mac GPU through the production implementation. It checks pooled uploads and reuploads, partial blocks, three mip levels, two array layers, both direct-upload settings, all sixteen BC format views, attachments and clears. Before the fix the upload and sampled-view cases abort under Metal validation. Historical iPhone 13 Pro Max / A15 evidence on iOS 27.0.1 shows Wonder 1.0.0 character selection before and after the equivalent fix. The current engine revision has not been installed on that phone.
+ - **Limits:** this does not implement raw compressed-block views, GPU BC block encoding, or decoded-to-compressed readback. It keeps the existing compatibility opt-in and does not change the supported-device check.
+ - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md).
++
++### Optional omission of the finest BC mip
++
++- **Symptom:** large read-only BC textures with mipmaps consume more host memory than an iPhone can afford.
++- **Cause:** the normal upload allocates every guest mip. The finest level accounts for most of a mip chain's texels.
++- **Option:** a user-requested quality tradeoff, `DM_NVN_BC_MIP_SKIP=1`, starts sampled host storage at guest mip1 when both original dimensions meet `DM_NVN_BC_MIP_MIN_WIDTH` and `DM_NVN_BC_MIP_MIN_HEIGHT`. Thresholds default to 512. The Ocarina profile enables it by default on iOS only. Guest memory and its layout remain intact. Sparse, linear, multisample and writable textures are excluded. Copies, attachments, image access and explicit GPU readbacks request the full allocation before use, and the shared package stays full after promotion. The newer sparse view mapping also maps omitted mip0 views to the finest retained level.
++- **Check:** `make -C dm/gfx/tests GAME=0400486024DEC000 check_t_bc_mip_skip`, native BC and CPU-decoded uploads, every mip and slice, alias promotion and sampled views under Metal validation.
++- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md#optional-bc-mip-memory-reduction). Physical-device gameplay on this rebase remains open.
+diff --git a/docs/settings.md b/docs/settings.md
+index 5af76cf..eef7550 100644
+--- a/docs/settings.md
++++ b/docs/settings.md
+@@ -5,7 +5,7 @@ The screen before the game starts shows the settings the game supports. A settin
+ - [Tested defaults](#tested-defaults)
+ - [Game](#game): [Frame rate](#frame-rate), [Render scale](#render-scale), [Console mode](#console-mode), [Upscaling](#upscaling), [Game's upscaler](#games-upscaler), [Game language](#game-language), [Picture](#picture), [Frame-rate counter](#frame-rate-counter), [Mix with other audio](#mix-with-other-audio)
+ - [Controls](#controls): [Touch feedback](#touch-feedback), [Touch controls size and left stick](#touch-controls-size-and-left-stick), [Game rumble](#game-rumble), [Rumble strength](#rumble-strength), [Rumble cutoff](#rumble-cutoff), [Press a button to join](#press-a-button-to-join)
+-- [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Shader prefetch](#shader-prefetch), [Downsample HDR textures](#downsample-hdr-textures), [Hold frames when late](#hold-frames-when-late), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
++- [Performance](#performance): [Frame buffering](#frame-buffering), [Metal 4 pipelines](#metal-4-pipelines), [Pipeline prebuild](#pipeline-prebuild), [Encode thread](#encode-thread), [Shader prefetch](#shader-prefetch), [Downsample HDR textures](#downsample-hdr-textures), [Hold frames when late](#hold-frames-when-late), [Real speed at the game's own frame rate](#real-speed-at-the-games-own-frame-rate), [Performance HUD](#performance-hud), [Reset to tested defaults](#reset-to-tested-defaults)
+ - [The Mac settings window](#the-mac-settings-window): [Display mode](#display-mode)
+ - [In-game menu](#in-game-menu)
+ - [TV](#tv)
+@@ -232,6 +232,13 @@ flowchart LR
+ 
+ - **On** (the default for most games): an even 30 fps (or 20) in heavy scenes instead of a mix of 30 and 60.
+ - **Off:** the game keeps aiming at 60; a late frame is shown one refresh later and the next one goes on as usual, so heavy scenes look less even but stay closer to 60 on average.
++
++### Real speed at the game's own frame rate
++
++For games whose clock advances a fixed 1/60 s per frame (The Legend of Zelda: Ocarina of Time). With **Frame rate** at the game's own, such a game runs in slow motion whenever the device falls below 60 fps: at 45 fps everything moves at three quarters of its speed. With this on, the app measures how long its frames really take and the game's clock follows that, so the game runs at normal speed at any frame rate, and frames are still shown as soon as they are ready.
++
++- **On** (the default where the game supports it): normal speed below 60 fps.
++- **Off:** the game's own behaviour, slower below 60 fps. A diagnostic step if the game's timing looks wrong with it on.
+ - **When to change it:** turn it off if the game often falls to 30 fps although it is only slightly late.
+ 
+ ### Performance HUD
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index 6a231c8..abed2b1 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -2840,7 +2840,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, se
+     if pkg_key:
+         PROG.set(step='checking the inputs')
+         key = fingerprint(pkg_key, ('files', chain_files(repo)), translator_key(xlate), shader_profile_key(py, repo, env, g), ('files', [pso_pairs]), *toolchain(repo, env),
+-                          {k: env.get(k) for k in ('XLATE_DEBUG', 'XLATE_REDUCED')}, *((seen,) if seen else ()), env=env)
++                          {k: env.get(k) for k in ('XLATE_DEBUG', 'XLATE_REDUCED', 'DMSH_REDSUM')}, *((seen,) if seen else ()), env=env)
+         note = next((n for k in ((kmac,) if seen else (kmac, kf) if mac else (kf,)) if (n := reused(k, key)) is not None), None)
+         if note is None and from_seed and not seen and shader_lib.has_library(libs):
+             stamp = shader_lib.read_stamp(libs)
+@@ -3518,6 +3518,9 @@ def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx,
+     for n, r in (programs or {}).items(): cmd += ['--program', f'{n}\t{r["patched"]}\t{r["romfs"]}\t{r["msl"]}\t{r["tables"]}\t{r["html"]}']
+     html_dir = (game / 'html') if (game / 'html').is_dir() else ((romfs_dir / 'html') if romfs_dir and (romfs_dir / 'html').is_dir() else None)
+     if html_dir: cmd += ['--html', html_dir]
++    # game file replacements beside the RomFS: romfs_overlay_mac when the Mac app's differ from the IPA's (Ocarina of Time: native resolution on the Mac, 720p on the iPhone), else romfs_overlay
++    overlay = next((d for d in (game / 'romfs_overlay_mac', game / 'romfs_overlay') if d.is_dir()), None)
++    if overlay: cmd += ['--romfs-overlay', overlay]; say(f'game file replacements: {overlay}')
+     unchanged = False
+     def line(ln):
+         nonlocal unchanged
+diff --git a/scripts/oot_res_overlay.py b/scripts/oot_res_overlay.py
+new file mode 100755
+index 0000000..cf8ef50
+--- /dev/null
++++ b/scripts/oot_res_overlay.py
+@@ -0,0 +1,48 @@
++#!/usr/bin/env python3
++# oot_res_overlay.py <RomFS.img> <overlay folder> <top scale> [<LoadThreshold> | -] [flat]
++# The Legend of Zelda: Ocarina of Time (Switch 2, 0400486024DEC000): its render resolution, through the game's own dynamic-resolution table. Writes a modified copy of
++# Pack/Bootup.Nin_Ounce_NVN2.pack.zs into <overlay folder>/Pack/, for DM_ROMFS_OVERLAY (the IPA's romfs_overlay folder, the Mac app's --romfs-overlay); the RomFS image itself is not changed.
++# In System/GameGraphics/ModelSceneExtensionParam the game has one base resolution per mode (ResolutionParam: 1920x1080 handheld, 2560x1440 docked, of which docked shows 2048x1152) and dynamic-resolution levels
++# (DynamicResolutionParam: ResolutionReduceScale 0.75 down to 0.333, LoadThreshold 95) that multiply that base. Every ResolutionReduceScale is multiplied by <top scale> / 0.75, so the top
++# level renders at <top scale> x the base and the lower levels keep their order; with "flat" every level is <top scale>, one fixed resolution (the game then never makes a new set of render
++# targets). The optional fourth argument sets every LoadThreshold (GPU load in percent over which the game steps down; '-' keeps them). Recompressed with the dictionary the original used.
++# Examples (docs/games/kid-with-sword-remake.md): into <romfs_overlay>/handheld, 0.666667 - flat = 1280x720; into <romfs_overlay>/docked, 0.9375 - flat = 1951x1098 (docked sizes come in
++# steps of about 45 pixels; 1920x1080 is not one). The host serves the subfolder for the console mode (hle_fs.c rom_overlay_set).
++# Needs the zstandard package (pip install zstandard). The game's files are read from your own dump; nothing of the game is in this repository.
++import sys, os, struct, zstandard
++img, out, top = sys.argv[1], sys.argv[2], float(sys.argv[3]); thr = float(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] != '-' else None   # optional: every LoadThreshold set to this ('-' keeps them)
++flat = len(sys.argv) > 5 and sys.argv[5] == 'flat'   # every level at <top scale>: one fixed resolution, so the dynamic resolution never makes the game build a new set of render targets
++sys.path.insert(0, os.environ.get('DMT') or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'dm', 'tools')); import romfs_image as r
++idx = r.read_index(img); f = open(img, 'rb')
++def read(p): _, o, n = idx[p]; f.seek(o); return f.read(n)
++def sarc_files(b):
++    hl, bom, size, doff = struct.unpack_from('<HHII', b, 4); o = hl; sh, cnt, mult = struct.unpack_from('<HHI', b, o + 4); o += sh
++    nodes = [struct.unpack_from('<IIII', b, o + 16 * i) for i in range(cnt)]; o += 16 * cnt + 8
++    return {b[o + (a & 0xffffff) * 4:].split(b'\0', 1)[0].decode(): (doff + s, doff + e) for h, a, s, e in nodes}
++dz = zstandard.ZstdDecompressor()
++dicts = sarc_files(dz.decompress(read('Pack/ZsDic.pack.zs'), max_output_size=1 << 28)); zd = dz.decompress(read('Pack/ZsDic.pack.zs'), max_output_size=1 << 28)
++PACK = 'Pack/Bootup.Nin_Ounce_NVN2.pack.zs'; raw = read(PACK); used = None
++for name, (s, e) in dicts.items():
++    try: data = bytearray(zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(zd[s:e])).decompress(raw, max_output_size=1 << 30)); used = name; break
++    except Exception: pass
++assert used, 'no dictionary decompressed the pack'
++fs = sarc_files(bytes(data)); PARAM = 'System/GameGraphics/ModelSceneExtensionParam/Default.game__gfx__ModelSceneExtensionParam.bgyml'
++s, e = fs[PARAM]; y = data[s:e]
++# the BYML: find every float (type 0xD2) value whose dict key is ResolutionReduceScale
++ver, ko, so, ro = struct.unpack_from('<HIII', y, 2); n = struct.unpack_from('<I', y, ko)[0] >> 8; offs = struct.unpack_from('<%dI' % (n + 1), y, ko + 4)
++keys = [y[ko + offs[i]: y.index(b'\0', ko + offs[i])].decode() for i in range(n)]; K = keys.index('ResolutionReduceScale')
++done = set()
++for o in range(0, len(y) - 8, 4):   # dict entries are 8 bytes: u24 key | u8 type, u32 value; scan for (K, 0xD2)
++    k = struct.unpack_from('<I', y, o)[0]
++    if k == (K | 0xD2 << 24) and o + 4 not in done:
++        v = struct.unpack_from('<f', y, o + 4)[0]
++        if 0.05 < v <= 1.0: nv = top if flat else v * top / 0.75; struct.pack_into('<f', y, o + 4, nv); done.add(o + 4); print('ResolutionReduceScale %.5f -> %.5f (@%#x)' % (v, nv, o + 4))
++assert done, 'no ResolutionReduceScale found'
++if thr is not None:
++    L = keys.index('LoadThreshold')
++    for o in range(0, len(y) - 8, 4):
++        if struct.unpack_from('<I', y, o)[0] == (L | 0xD2 << 24): v = struct.unpack_from('<f', y, o + 4)[0]; struct.pack_into('<f', y, o + 4, thr); print('LoadThreshold %g -> %g (@%#x)' % (v, thr, o + 4))
++data[s:e] = y
++cz = zstandard.ZstdCompressor(level=19, dict_data=zstandard.ZstdCompressionDict(zd[dicts[used][0]:dicts[used][1]]))
++os.makedirs(os.path.join(out, 'Pack'), exist_ok=True); open(os.path.join(out, PACK), 'wb').write(cz.compress(bytes(data)))
++print('wrote', os.path.join(out, PACK), 'dictionary', used)

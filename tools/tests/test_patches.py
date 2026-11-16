@@ -1,6 +1,8 @@
 """tools/patches.py, the library tools/engine.py is built on (LNPANDY/NX2Apple#123, #214): the headers of a patch, `status`, the
 chain rule read from the engine's AGENTS.md, and the engine sources that carry the fork's patch list. The series itself is
 applied and checked by tools/tests/test_engine.py. No game files, no network."""
+import hashlib
+from unittest.mock import patch
 import importlib.util, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
@@ -127,6 +129,19 @@ class ApplySeries(unittest.TestCase):
 
 
 class ChainRule(unittest.TestCase):
+    def test_registered_chain_backports_match_the_queue(self):
+        digests = {hashlib.sha256(p.path.read_bytes()).hexdigest() for p in P.load(REPO)}
+        self.assertTrue(set(P.CHAIN_BACKPORTS) <= digests)
+
+    def test_chain_exception_requires_the_complete_reviewed_patch(self):
+        content = (PATCH % HEADER).encode()
+        digest = hashlib.sha256(content).hexdigest()
+        self.assertIsNone(P.chain_backport_bytes(content))
+        with patch.dict(P.CHAIN_BACKPORTS, {digest: 'user-requested backport'}, clear=True):
+            self.assertEqual(P.chain_backport_bytes(content), 'user-requested backport')
+            self.assertIsNone(P.chain_backport_bytes(content + b'\n'))
+
+
     def test_the_chain_paths_come_from_the_engines_agents_md(self):
         g = P.chain_paths(SRC)
         for want in ('dm/gfx/nvn/dmsh_chain.h', 'dm/gfx/tools/dmsh_*', 'dm/gfx/tools/Program.cs', 'dm/gfx/tools/ios_metal.py', 'dm/gfx/tools/dmsh_chain.lock', 'dm/gfx/nvn/dmsh_abi.h'):

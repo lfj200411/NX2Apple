@@ -449,13 +449,13 @@ def cmd_export(a):
             say(f'skipped {c[:10]}: it changes only generated files'); continue
         files = sorted({f for m in re.finditer(r'(?m)^diff --git a/(\S+) b/(\S+)$', text) for f in m.groups()})
         hits = P.chain_hits(files, eng)
-        if hits:
-            raise Fail(f'{c[:10]} touches the shader chain or the tool pins ({", ".join(hits)}): patches must not change them (patches/README.md, Patch policy)')
         head_, sep, rest = text.partition('\n---\n')
         add = [f'{k}: {v}' for k, v in (('Upstream-Status', a.status), ('Reason', a.reason), ('Issue', a.issue))
                if not re.search(r'(?m)^' + k + ':', head_)]
         if add: head_ = head_.rstrip('\n') + '\n\n' + '\n'.join(add) + '\n'
         text = head_ + sep + rest
+        if hits and not P.chain_backport_bytes(text.encode(errors='surrogateescape')):
+            raise Fail(f'{c[:10]} touches the shader chain or the tool pins ({", ".join(hits)}): patches must not change them (patches/README.md, Patch policy)')
         m = re.search(r'(?m)^Subject: (?:\[PATCH[^\]]*\] )?(.*)$', text)
         subj = m.group(1) if m else c[:10]
         n += 1
@@ -514,7 +514,7 @@ def cmd_check(a):
             gen = sorted(f for f in p.files if f in {o for o, _ in P.GENERATED})
             if gen: bad.append(f'{p.file}: touches generated files ({", ".join(gen)}); sync regenerates them, so a patch must not carry them')
             hits = P.chain_hits(p.files, s.dir)
-            if hits: bad.append(f'{p.file}: touches the shader chain or the tool pins, which patches must not change ({", ".join(hits)}); see patches/README.md, Patch policy')
+            if hits and not P.chain_backport(p): bad.append(f'{p.file}: touches the shader chain or the tool pins, which patches must not change ({", ".join(hits)}); see patches/README.md, Patch policy')
         if bad:
             say('patch queue: invalid\n  ' + '\n  '.join(bad)); return 1
         _, landed, conflicts = P.apply_series(s.dir, patches)

@@ -145,6 +145,11 @@ Upstream's compatibility is the baseline. A patch does not change it silently.
    `tools/engine.py` reads from there), upstream's tool pins, and lowering a minimum version. Shader caches and game profiles depend on them, and diverging there
    makes our builds incompatible with upstream's caches and bug reports. `tools/engine.py check` and `export` reject a patch that touches
    these paths.
+   This local customization branch has one explicitly user-requested exception, the complete adapted Ocarina shader patch
+   `0060-shader-ocarina-port-raw-load-runs-and-simd-reduc.patch`. `CHAIN_BACKPORTS` in `tools/patches.py` pins its full SHA-256.
+   `check` and `export` accept only that exact patch. Editing the patch requires reviewing and registering its new digest.
+   The translator is rebuilt as a universal native executable, with the matching tool lock and chain header. Game libraries
+   must be rebuilt. This exception does not apply to other patches or upstream releases.
 4. **Bug reports go where they belong.** Every build records the patches it carries: `DMForkPatches` in the app's `Info.plist` and
    the first line of the log (`fork patches: a, b, c`, `Documents/log.txt` on iOS, the Mac app's log). The issue forms ask for that
    line, so a report from a configuration upstream does not support comes to NX2Apple, not to seedds. The list is every patch in the

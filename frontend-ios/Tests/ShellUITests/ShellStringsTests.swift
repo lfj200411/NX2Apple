@@ -10,6 +10,14 @@ import Testing
     /// Texts a language writes exactly as English does, by English text, with the languages that do. Names, units and words that are
     /// the same in that language. Anything else equal to English is a text nobody translated. Reviewed with each new entry.
     private static let cognates: [String: Set<String>] = [
+        "128 px": ["de", "sv", "fr", "it", "ja"],   // pixel units
+        "256 px": ["de", "sv", "fr", "it", "ja"],   // pixel units
+        "512 px": ["de", "sv", "fr", "it", "ja"],   // pixel units
+        "1024 px": ["de", "sv", "fr", "it", "ja"],   // pixel units
+        "2048 px": ["de", "sv", "fr", "it", "ja"],   // pixel units
+        "4096 px": ["de", "sv", "fr", "it", "ja"],   // pixel units
+        "8192 px": ["de", "sv", "fr", "it", "ja"],   // pixel units
+        "16384 px": ["de", "sv", "fr", "it", "ja"],   // pixel units
         "30 fps": ["de", "sv", "it", "ja"], "60 fps": ["de", "sv", "it", "ja"],   // a unit
         "120 fps": ["de", "sv", "it", "ja"],                              // a unit
         "16:9 (Switch)": ["de", "sv", "fr", "it"],                 // aspect ratio and console name
@@ -90,6 +98,14 @@ import Testing
         #expect(options.map(\.id) == ["0", "1"], "the value written to the game is not translated")
         let section = SettingSection(id: "Game", title: "Game", rows: [row], in: zh)
         #expect(section.id == "Game" && section.title == "游戏")
+    }
+
+    @Test func theNativeFrameRateChoiceKeepsItsValueInChinese() throws {
+        let zh = try languageBundle("zh-Hans")
+        let kind = SettingKind.choice([SettingOption("0", "Game's own", in: zh), SettingOption("30", "30 fps", in: zh), SettingOption("60", "60 fps", in: zh)])
+        guard case .choice(let options) = kind else { Issue.record("not a choice"); return }
+        #expect(options.map(\.id) == ["0", "30", "60"])
+        #expect(options.map(\.label) == ["游戏自带", "30 fps", "60 fps"])
     }
 
     @Test func aNoteWithAPercentSignIsLookedUpAsItIs() throws {
